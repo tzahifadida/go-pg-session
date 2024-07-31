@@ -1,6 +1,6 @@
-# gopgsession
+# go-pg-session
 
-`gopgsession` is a distributed session management library that uses PostgreSQL's LISTEN/NOTIFY mechanism to handle session updates across multiple nodes. It leverages the `pgln` library to quickly recover from disconnections, ensuring robust and reliable session management.
+`go-pg-session` is a distributed session management library that uses PostgreSQL's LISTEN/NOTIFY mechanism to handle session updates across multiple nodes. It leverages the `pgln` library to quickly recover from disconnections, ensuring robust and reliable session management.
 
 ⭐️ **Star This Project** ⭐️
 
@@ -21,7 +21,7 @@ If you find this project helpful, please give it a star on GitHub! Your support 
 To install the package, run:
 
 ```sh
-go get github.com/tzahifadida/gopgsession
+go get github.com/tzahifadida/go-pg-session
 ```
 
 ## Usage
