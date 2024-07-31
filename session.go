@@ -16,20 +16,46 @@ import (
 	"time"
 )
 
+// Config holds the configuration options for the SessionManager.
 type Config struct {
-	MaxSessions               int           `json:"maxSessions"`
-	MaxAttributeLength        int           `json:"maxAttributeLength"`
-	SessionExpiration         time.Duration `json:"sessionExpiration"`
-	InactivityDuration        time.Duration `json:"inactivityDuration"`
-	CleanupInterval           time.Duration `json:"cleanupInterval"`
-	CacheSize                 int           `json:"cacheSize"`
-	TablePrefix               string        `json:"tablePrefix"`
-	SchemaName                string        `json:"schemaName"`
-	CreateSchemaIfMissing     bool          `json:"createSchemaIfMissing"`
-	LastAccessUpdateInterval  time.Duration `json:"lastAccessUpdateInterval"`
-	LastAccessUpdateBatchSize int           `json:"lastAccessUpdateBatchSize"`
+	// MaxSessions is the maximum number of concurrent sessions allowed per user.
+	// When this limit is reached, the oldest session will be removed.
+	MaxSessions int `json:"maxSessions"`
+
+	// MaxAttributeLength is the maximum length (in bytes) allowed for a single session attribute value.
+	MaxAttributeLength int `json:"maxAttributeLength"`
+
+	// SessionExpiration is the duration after which a session expires if not accessed.
+	SessionExpiration time.Duration `json:"sessionExpiration"`
+
+	// InactivityDuration is the duration of inactivity after which a session is considered expired.
+	InactivityDuration time.Duration `json:"inactivityDuration"`
+
+	// CleanupInterval is the time interval between cleanup operations for expired sessions.
+	CleanupInterval time.Duration `json:"cleanupInterval"`
+
+	// CacheSize is the maximum number of sessions to keep in the in-memory cache.
+	CacheSize int `json:"cacheSize"`
+
+	// TablePrefix is the prefix to be used for all database tables created by the SessionManager.
+	// This allows multiple SessionManager instances to coexist in the same database.
+	TablePrefix string `json:"tablePrefix"`
+
+	// SchemaName is the name of the PostgreSQL schema to use for session tables.
+	// If empty, the default schema (usually "public") will be used.
+	SchemaName string `json:"schemaName"`
+
+	// CreateSchemaIfMissing, if true, will create the specified schema if it doesn't exist.
+	CreateSchemaIfMissing bool `json:"createSchemaIfMissing"`
+
+	// LastAccessUpdateInterval is the time interval between batch updates of session last access times.
+	LastAccessUpdateInterval time.Duration `json:"lastAccessUpdateInterval"`
+
+	// LastAccessUpdateBatchSize is the maximum number of sessions to update in a single batch operation.
+	LastAccessUpdateBatchSize int `json:"lastAccessUpdateBatchSize"`
 }
 
+// DefaultConfig returns a Config struct with default values.
 func DefaultConfig() *Config {
 	return &Config{
 		MaxSessions:               5,
@@ -57,15 +83,18 @@ type Session struct {
 	sm           *SessionManager
 }
 
+// GetAttributes returns all attributes of the session.
 func (s *Session) GetAttributes() map[string]interface{} {
 	return s.attributes
 }
 
+// GetAttribute returns the value of a specific attribute.
 func (s *Session) GetAttribute(key string) (interface{}, bool) {
 	value, ok := s.attributes[key]
 	return value, ok
 }
 
+// UpdateAttribute updates or adds an attribute to the session.
 func (s *Session) UpdateAttribute(key string, value interface{}) error {
 	valueStr, err := convertToString(value)
 	if err != nil {
@@ -80,7 +109,7 @@ func (s *Session) UpdateAttribute(key string, value interface{}) error {
 	return nil
 }
 
-func (s *Session) DeepCopy() *Session {
+func (s *Session) deepCopy() *Session {
 	copiedAttributes := make(map[string]interface{}, len(s.attributes))
 	for k, v := range s.attributes {
 		copiedAttributes[k] = v
@@ -103,6 +132,7 @@ type cacheItem struct {
 	element *list.Element
 }
 
+// SessionManager manages sessions in a PostgreSQL database with caching capabilities.
 type SessionManager struct {
 	Config                *Config
 	cache                 map[uuid.UUID]*cacheItem
@@ -117,11 +147,13 @@ type SessionManager struct {
 	lastAccessUpdateMutex sync.Mutex
 }
 
-type SessionNotification struct {
+// sessionNotification represents a notification for session updates.
+type sessionNotification struct {
 	NodeID    uuid.UUID `json:"nodeID"`
 	SessionID uuid.UUID `json:"sessionID"`
 }
 
+// NewSessionManager creates a new SessionManager with the given configuration and connection string.
 func NewSessionManager(cfg *Config, pgxConnectionString string) (*SessionManager, error) {
 	if cfg == nil {
 		cfg = DefaultConfig()
@@ -289,6 +321,7 @@ func (sm *SessionManager) getChannelName(baseName string) string {
 	return sm.Config.TablePrefix + baseName
 }
 
+// CreateSession creates a new session for the given user with the provided attributes.
 func (sm *SessionManager) CreateSession(ctx context.Context, userID uuid.UUID, attributes map[string]interface{}) (uuid.UUID, error) {
 	sessionID, err := uuid.NewRandom()
 	if err != nil {
@@ -349,7 +382,7 @@ func (sm *SessionManager) CreateSession(ctx context.Context, userID uuid.UUID, a
 	sm.addOrUpdateCache(session)
 	sm.mutex.Unlock()
 
-	notification := SessionNotification{
+	notification := sessionNotification{
 		NodeID:    sm.nodeID,
 		SessionID: sessionID,
 	}
@@ -374,13 +407,14 @@ func (sm *SessionManager) CreateSession(ctx context.Context, userID uuid.UUID, a
 	return sessionID, nil
 }
 
+// GetSession retrieves a session by its ID and optionally updates its last access time.
 func (sm *SessionManager) GetSession(ctx context.Context, sessionID uuid.UUID, updateSessionAccess bool) (*Session, error) {
 	sm.mutex.RLock()
 	item, exists := sm.cache[sessionID]
 	sm.mutex.RUnlock()
 
 	if exists {
-		sessionCopy := item.session.DeepCopy()
+		sessionCopy := item.session.deepCopy()
 		if updateSessionAccess {
 			sm.updateSessionAccessAsync(ctx, sessionID)
 		}
@@ -415,9 +449,10 @@ func (sm *SessionManager) GetSession(ctx context.Context, sessionID uuid.UUID, u
 	sm.addOrUpdateCache(session)
 	sm.mutex.Unlock()
 
-	return session.DeepCopy(), nil
+	return session.deepCopy(), nil
 }
 
+// UpdateSession updates the session in the database with any changes made to its attributes.
 func (sm *SessionManager) UpdateSession(ctx context.Context, session *Session) error {
 	tx, err := sm.db.BeginTxx(ctx, nil)
 	if err != nil {
@@ -465,13 +500,13 @@ func (sm *SessionManager) UpdateSession(ctx context.Context, session *Session) e
 
 	sm.mutex.Lock()
 	if item, exists := sm.cache[session.ID]; exists {
-		item.session = session.DeepCopy()
+		item.session = session.deepCopy()
 		item.session.UpdatedAt = now
 		sm.lru.MoveToFront(item.element)
 	}
 	sm.mutex.Unlock()
 
-	notification := SessionNotification{
+	notification := sessionNotification{
 		NodeID:    sm.nodeID,
 		SessionID: session.ID,
 	}
@@ -489,6 +524,7 @@ func (sm *SessionManager) UpdateSession(ctx context.Context, session *Session) e
 	return nil
 }
 
+// DeleteSession deletes a session by its ID.
 func (sm *SessionManager) DeleteSession(ctx context.Context, sessionID uuid.UUID) error {
 	query := fmt.Sprintf(`
         DELETE FROM %s
@@ -507,7 +543,7 @@ func (sm *SessionManager) DeleteSession(ctx context.Context, sessionID uuid.UUID
 	}
 	sm.mutex.Unlock()
 
-	notification := SessionNotification{
+	notification := sessionNotification{
 		NodeID:    sm.nodeID,
 		SessionID: sessionID,
 	}
@@ -525,6 +561,7 @@ func (sm *SessionManager) DeleteSession(ctx context.Context, sessionID uuid.UUID
 	return nil
 }
 
+// DeleteAllUserSessions deletes all sessions for a given user.
 func (sm *SessionManager) DeleteAllUserSessions(ctx context.Context, userID uuid.UUID) error {
 	query := fmt.Sprintf(`
         DELETE FROM %s
@@ -558,7 +595,7 @@ func (sm *SessionManager) DeleteAllUserSessions(ctx context.Context, userID uuid
 
 	channelName := sm.getChannelName("session_updates")
 	for _, sessionID := range deletedSessionIDs {
-		notification := SessionNotification{
+		notification := sessionNotification{
 			NodeID:    sm.nodeID,
 			SessionID: sessionID,
 		}
@@ -625,7 +662,7 @@ func convertFromString(valueStr string) (interface{}, error) {
 }
 
 func (sm *SessionManager) handleNotification(channel string, payload string) {
-	var notification SessionNotification
+	var notification sessionNotification
 	err := json.Unmarshal([]byte(payload), &notification)
 	if err != nil {
 		log.Printf("Error unmarshalling notification: %v", err)
@@ -773,7 +810,7 @@ func (sm *SessionManager) cleanupExpiredSessions(ctx context.Context) error {
 
 	channelName := sm.getChannelName("session_updates")
 	for _, sessionID := range deletedSessionIDs {
-		notification := SessionNotification{
+		notification := sessionNotification{
 			NodeID:    sm.nodeID,
 			SessionID: sessionID,
 		}
@@ -792,6 +829,7 @@ func (sm *SessionManager) cleanupExpiredSessions(ctx context.Context) error {
 	return nil
 }
 
+// Shutdown gracefully shuts down the SessionManager.
 func (sm *SessionManager) Shutdown(ctx context.Context) error {
 	close(sm.shutdownChan)
 
@@ -819,19 +857,20 @@ func (sm *SessionManager) Shutdown(ctx context.Context) error {
 
 func (sm *SessionManager) enforceMaxSessions(ctx context.Context, userID uuid.UUID) {
 	query := fmt.Sprintf(`
-        WITH deleted AS (
+        WITH keep_sessions AS (
+            SELECT "id"
+            FROM %s
+            WHERE "user_id" = $1
+            ORDER BY "last_accessed" DESC
+            LIMIT $2
+        ),
+        deleted AS (
             DELETE FROM %s
-            WHERE "id" NOT IN (
-                SELECT "id"
-                FROM %s
-                WHERE "user_id" = $1
-                ORDER BY "last_accessed" DESC
-				LIMIT $2
-            )
-			AND "user_id" = $1
+            WHERE "user_id" = $1
+            AND "id" NOT IN (SELECT "id" FROM keep_sessions)
             RETURNING "id"
         )
-        SELECT "id" FROM deleted
+        SELECT "id" FROM deleted;
     `, sm.getTableName("sessions"), sm.getTableName("sessions"))
 
 	var deletedSessionIDs []uuid.UUID
@@ -853,7 +892,7 @@ func (sm *SessionManager) enforceMaxSessions(ctx context.Context, userID uuid.UU
 
 		channelName := sm.getChannelName("session_updates")
 		for _, sessionID := range deletedSessionIDs {
-			notification := SessionNotification{
+			notification := sessionNotification{
 				NodeID:    sm.nodeID,
 				SessionID: sessionID,
 			}
