@@ -1,3 +1,9 @@
+// Package gopgsession provides a distributed session management library using PostgreSQL.
+//
+// It implements an eventually consistent memory caching strategy on each node,
+// offering a hybrid solution that leverages the benefits of both cookie-based
+// and server-side session management. This package is designed for high-performance,
+// scalable applications that require robust session handling across multiple nodes.
 package gopgsession
 
 import (
@@ -62,15 +68,12 @@ type Config struct {
 	// LastAccessUpdateBatchSize is the maximum number of sessions to update in a single batch operation.
 	LastAccessUpdateBatchSize int `json:"lastAccessUpdateBatchSize"`
 
+	// NotifyOnUpdates determines whether to send notifications on session updates.
 	// This is a noisier option (true by default) but safer if you do not use additional cookies to note the last version.
 	// For dozens of nodes, you may want to turn it off.
-	// The way to use it when turned off is to have a main cookie session=<sessionid> (for load balancers),
-	// then have additional cookies session_version=<sessionid+version> which if there are multiple versions,
-	// you take the most recent and delete the old ones. Essentially moving the bookkeeping to the caller.
-	// Default is true (so you don't have to do that until hitting scale).
 	NotifyOnUpdates bool
 
-	// Provide a Custom PGLN (if not supplied will be created with defaults)
+	// CustomPGLN is an optional custom PGLN instance. If not supplied, a new one will be created with defaults.
 	CustomPGLN *pgln.PGListenNotify `json:"-"`
 
 	//Sessions database connections settings
@@ -170,6 +173,13 @@ type GetSessionOptions struct {
 }
 
 // NewSessionManager creates a new SessionManager with the given configuration and connection string.
+//
+// Parameters:
+//   - cfg: A pointer to a Config struct containing the configuration options for the SessionManager.
+//   - pgxConnectionString: A string representing the PostgreSQL connection string.
+//
+// Returns:
+//   - A pointer to the created SessionManager and an error if any occurred during initialization.
 func NewSessionManager(cfg *Config, pgxConnectionString string) (*SessionManager, error) {
 	if cfg == nil {
 		cfg = DefaultConfig()
@@ -350,6 +360,14 @@ func (sm *SessionManager) createSchemaAndTables() error {
 }
 
 // CreateSession creates a new session for the given user with the provided attributes.
+//
+// Parameters:
+//   - ctx: The context for the operation.
+//   - userID: The UUID of the user for whom the session is being created.
+//   - attributes: A map of initial attributes for the session.
+//
+// Returns:
+//   - A pointer to the created Session and an error if any occurred during creation.
 func (sm *SessionManager) CreateSession(ctx context.Context, userID uuid.UUID, attributes map[string]SessionAttributeValue) (*Session, error) {
 	sessionID, err := uuid.NewRandom()
 	if err != nil {
@@ -418,19 +436,54 @@ func (sm *SessionManager) CreateSession(ctx context.Context, userID uuid.UUID, a
 	return session, nil
 }
 
+// GetSession retrieves a session by its ID.
+//
+// Parameters:
+//   - ctx: The context for the operation.
+//   - sessionID: The UUID of the session to retrieve.
+//
+// Returns:
+//   - A pointer to the retrieved Session and an error if any occurred during retrieval.
 func (sm *SessionManager) GetSession(ctx context.Context, sessionID uuid.UUID) (*Session, error) {
 	return sm.GetSessionWithVersionAndOptions(ctx, sessionID, 0, GetSessionOptions{})
 }
 
+// GetSessionWithOptions retrieves a session by its ID with the specified options.
+//
+// Parameters:
+//   - ctx: The context for the operation.
+//   - sessionID: The UUID of the session to retrieve.
+//   - opts: The GetSessionOptions to use for retrieval.
+//
+// Returns:
+//   - A pointer to the retrieved Session and an error if any occurred during retrieval.
 func (sm *SessionManager) GetSessionWithOptions(ctx context.Context, sessionID uuid.UUID, opts GetSessionOptions) (*Session, error) {
 	return sm.GetSessionWithVersionAndOptions(ctx, sessionID, 0, opts)
 }
 
+// GetSessionWithVersion retrieves a session by its ID and version.
+//
+// Parameters:
+//   - ctx: The context for the operation.
+//   - sessionID: The UUID of the session to retrieve.
+//   - version: The version of the session to retrieve.
+//
+// Returns:
+//   - A pointer to the retrieved Session and an error if any occurred during retrieval.
 func (sm *SessionManager) GetSessionWithVersion(ctx context.Context, sessionID uuid.UUID, version int) (*Session, error) {
 	return sm.GetSessionWithVersionAndOptions(ctx, sessionID, version, GetSessionOptions{})
 }
 
-// GetSessionWithVersionAndOptions retrieves a session by its ID and optionally updates its last access time.
+// GetSessionWithVersionAndOptions retrieves a session by its ID and version with the specified options.
+//
+// Parameters:
+//   - ctx: The context for the operation.
+//   - sessionID: The UUID of the session to retrieve.
+//   - version: The version of the session to retrieve.
+//   - opts: The GetSessionOptions to use for retrieval.
+//
+// Returns:
+//   - A pointer to the retrieved Session and an error if any occurred during retrieval.
 func (sm *SessionManager) GetSessionWithVersionAndOptions(ctx context.Context, sessionID uuid.UUID, version int, opts GetSessionOptions) (*Session, error) {
 	if !opts.ForceRefresh {
 		sm.mutex.RLock()
@@ -498,11 +551,14 @@ func (sm *SessionManager) GetSessionWithVersionAndOptions(ctx context.Context, s
 var ErrSessionVersionIsOutdated = errors.New("session version is outdated")
 
 // UpdateSession updates the session in the database with any changes made to its attributes.
-// checkVersion is an optimistic lock check. If you want to fail the update if the session version is older in the database then in the cache.
-// this can be useful if you want to store sensitive information in the session that should not be overiden and act transaction like.
-// in which case it is recommended to also use GetSession with an option to ForceRefresh.
-// Also, if there is an error because of it, you can retry the operation a few times.
-// example of such a use case would be adding something to a shopping cart in quick succession without debouncing (user clicks to add more and more).
+//
+// Parameters:
+//   - ctx: The context for the operation.
+//   - session: A pointer to the Session to be updated.
+//   - checkVersion: A boolean indicating whether to perform optimistic locking using the session version.
+//
+// Returns:
+//   - A pointer to the updated Session and an error if any occurred during the update.
 func (sm *SessionManager) UpdateSession(ctx context.Context, session *Session, checkVersion bool) (*Session, error) {
 	tx, err := sm.db.BeginTxx(ctx, nil)
 	if err != nil {
@@ -621,6 +677,13 @@ func (sm *SessionManager) UpdateSession(ctx context.Context, session *Session, c
 }
 
 // DeleteSession deletes a session by its ID.
+//
+// Parameters:
+//   - ctx: The context for the operation.
+//   - sessionID: The UUID of the session to delete.
+//
+// Returns:
+//   - An error if any occurred during the deletion.
 func (sm *SessionManager) DeleteSession(ctx context.Context, sessionID uuid.UUID) error {
 	tx, err := sm.db.BeginTxx(ctx, nil)
 	if err != nil {
@@ -658,6 +721,13 @@ func (sm *SessionManager) DeleteSession(ctx context.Context, sessionID uuid.UUID
 	return nil
 }
 
+// DeleteAllSessions deletes all sessions from the database and cache.
+//
+// Parameters:
+//   - ctx: The context for the operation.
+//
+// Returns:
+//   - An error if any occurred during the deletion.
 func (sm *SessionManager) DeleteAllSessions(ctx context.Context) error {
 	tx, err := sm.db.BeginTxx(ctx, nil)
 	if err != nil {
@@ -713,6 +783,13 @@ func (sm *SessionManager) DeleteAllSessions(ctx context.Context) error {
 }
 
 // DeleteAllUserSessions deletes all sessions for a given user.
+//
+// Parameters:
+//   - ctx: The context for the operation.
+//   - userID: The UUID of the user whose sessions should be deleted.
+//
+// Returns:
+//   - An error if any occurred during the deletion.
 func (sm *SessionManager) DeleteAllUserSessions(ctx context.Context, userID uuid.UUID) error {
 	tx, err := sm.db.BeginTxx(ctx, nil)
 	if err != nil {
@@ -989,15 +1066,30 @@ func (s *Session) UpdateAttribute(key string, value interface{}, expiresAt *time
 	return nil
 }
 
+// DeleteAttribute removes an attribute from the session.
+//
+// Parameters:
+//   - key: The key of the attribute to delete.
 func (s *Session) DeleteAttribute(key string) {
 	delete(s.attributes, key)
 	s.deleted[key] = true
 }
 
+// GetAttributes returns all attributes of the session.
+//
+// Returns:
+//   - A map of all session attributes.
 func (s *Session) GetAttributes() map[string]SessionAttributeValue {
 	return s.attributes
 }
 
+// GetAttribute retrieves a specific attribute from the session.
+//
+// Parameters:
+//   - key: The key of the attribute to retrieve.
+//
+// Returns:
+//   - The SessionAttributeValue for the given key and a boolean indicating whether the attribute was found.
 func (s *Session) GetAttribute(key string) (SessionAttributeValue, bool) {
 	attr, ok := s.attributes[key]
 	return attr, ok
@@ -1293,6 +1385,13 @@ func (sm *SessionManager) sendNotification(db *sqlx.DB, notificationType string,
 	return nil
 }
 
+// RemoveAllUserCachedSessionsFromAllNodes removes all cached sessions for a given user from all nodes.
+//
+// Parameters:
+//   - userID: The UUID of the user whose cached sessions should be removed.
+//
+// Returns:
+//   - An error if any occurred during the removal process.
 func (sm *SessionManager) RemoveAllUserCachedSessionsFromAllNodes(userID uuid.UUID) error {
 	sm.mutex.Lock()
 	for sessionID, item := range sm.cache {
@@ -1305,10 +1404,25 @@ func (sm *SessionManager) RemoveAllUserCachedSessionsFromAllNodes(userID uuid.UU
 	return sm.sendNotification(sm.db, NotificationTypeUserSessionsRemovalFromCache, []string{userID.String()})
 }
 
+// EncodeSessionIDAndVersion encodes a session ID and version into a single string.
+//
+// Parameters:
+//   - sessionID: The UUID of the session.
+//   - version: The version of the session.
+//
+// Returns:
+//   - A string containing the encoded session ID and version.
 func (sm *SessionManager) EncodeSessionIDAndVersion(sessionID uuid.UUID, version int) string {
 	return fmt.Sprintf("%s:%d", sessionID.String(), version)
 }
 
+// ParseSessionIDAndVersion parses an encoded session ID and version string.
+//
+// Parameters:
+//   - encodedData: The string containing the encoded session ID and version.
+//
+// Returns:
+//   - The parsed session UUID, version, and an error if any occurred during parsing.
 func (sm *SessionManager) ParseSessionIDAndVersion(encodedData string) (uuid.UUID, int, error) {
 	parts := strings.Split(encodedData, ":")
 	if len(parts) != 2 {
@@ -1329,6 +1443,12 @@ func (sm *SessionManager) ParseSessionIDAndVersion(encodedData string) (uuid.UUI
 }
 
 // Shutdown gracefully shuts down the SessionManager.
+//
+// Parameters:
+//   - ctx: The context for the shutdown operation.
+//
+// Returns:
+//   - An error if any occurred during the shutdown process.
 func (sm *SessionManager) Shutdown(ctx context.Context) error {
 	close(sm.shutdownChan)
 

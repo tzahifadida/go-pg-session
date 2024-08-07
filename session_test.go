@@ -19,7 +19,7 @@ import (
 	"time"
 )
 
-func TestReadmeExamples(t *testing.T) {
+func TestReadmeExamplesPrev(t *testing.T) {
 	ctx := context.Background()
 
 	// Start PostgreSQL container

@@ -97,12 +97,12 @@ By leveraging attribute-level expiration, you can implement these features secur
 
 The following table compares the performance of `go-pg-session` (PostgreSQL-based) with a Redis-based session management solution. These benchmarks were run on an ARM64 Darwin system.
 
-| Operation     | Storage    | Operations/sec | Nanoseconds/op |
-|---------------|------------|---------------:|---------------:|
-| GetSession    | PostgreSQL |        326,712 |          3,061 |
-| GetSession    | Redis      |         38,567 |         25,929 |
-| UpdateSession | PostgreSQL |          2,137 |        467,921 |
-| UpdateSession | Redis      |         19,515 |         51,243 |
+| Operation     | Storage                    | Operations/sec | Nanoseconds/op |
+|---------------|----------------------------|---------------:|---------------:|
+| GetSession    | PostgreSQL + go-pg-session |        326,712 |          3,061 |
+| GetSession    | Redis                      |         38,567 |         25,929 |
+| UpdateSession | PostgreSQL + go-pg-session |          2,137 |        467,921 |
+| UpdateSession | Redis                      |         19,515 |         51,243 |
 
 ### Key Observations:
 
@@ -122,6 +122,7 @@ These results demonstrate that `go-pg-session` is particularly well-suited for a
 
 Remember that performance can vary based on hardware, network conditions, and specific use cases. It's always recommended to benchmark in your specific environment for the most accurate results.
 
+Note: A would be go-pg-session for redis (or go-redis-session) could outperform go-pg-session when writing for sure, but the aim of this library is to use only PostgreSQL without additional services like redis. Moreover, since sessions are mostly read oriented, this is less of an advantage. It is possible that a go-redis-session would be great for developers who use redis already and may be developed if there is a demand.  
 ## Installation
 
 To install the package, run:
@@ -163,6 +164,92 @@ cfg.ConnectionsMaxLifetime = 30 * time.Minute
 ```
 
 ## Usage Examples
+
+### Initialization
+
+Initialize a `SessionManager` with the configuration and a PostgreSQL connection string.
+
+```go
+pgxConnectionString := "postgres://username:password@localhost/dbname?sslmode=disable"
+sessionManager, err := gopgsession.NewSessionManager(cfg, pgxConnectionString)
+if err != nil {
+    log.Fatalf("Failed to initialize session manager: %v", err)
+}
+```
+
+### Creating a Session
+
+Create a session for a user with initial attributes.
+
+```go
+ctx := context.Background()
+userID := uuid.New()
+attributes := map[string]gopgsession.SessionAttributeValue{
+    "role":        {Value: "admin"},
+    "preferences": {Value: `{"theme":"dark"}`},
+}
+
+session, err := sessionManager.CreateSession(ctx, userID, attributes)
+if err != nil {
+    log.Fatalf("Failed to create session: %v", err)
+}
+
+log.Printf("Created session with ID: %s", session.ID)
+```
+
+### Retrieving a Session
+
+Retrieve a session by its ID. You can use either `GetSession` for simple retrieval or `GetSessionWithVersionAndOptions` for more control.
+
+```go
+// Simple retrieval
+session, err := sessionManager.GetSession(ctx, sessionID)
+if err != nil {
+    log.Fatalf("Failed to retrieve session: %v", err)
+}
+
+// Advanced retrieval
+session, err := sessionManager.GetSessionWithVersionAndOptions(ctx, sessionID, 0, gopgsession.GetSessionOptions{})
+if err != nil {
+    log.Fatalf("Failed to retrieve session: %v", err)
+}
+
+log.Printf("Retrieved session for user ID: %s", session.UserID)
+```
+
+### Updating a Session Attribute
+
+Update an attribute in a session.
+
+```go
+session, err := sessionManager.GetSession(ctx, sessionID)
+if err != nil {
+    log.Fatalf("Failed to retrieve session: %v", err)
+}
+
+err = session.UpdateAttribute("preferences", `{"theme":"light"}`, nil)
+if err != nil {
+    log.Fatalf("Failed to update session attribute: %v", err)
+}
+
+updatedSession, err := sessionManager.UpdateSession(ctx, session, true)
+if err != nil {
+    log.Fatalf("Failed to update session: %v", err)
+}
+```
+
+### Deleting a Session
+
+Delete a session by its ID.
+
+```go
+err = sessionManager.DeleteSession(ctx, sessionID)
+if err != nil {
+    log.Fatalf("Failed to delete session: %v", err)
+}
+
+log.Printf("Deleted session with ID: %s", sessionID)
+```
 
 ### Login and Logout Handlers
 
@@ -270,7 +357,6 @@ func updateUserPreferences(sm *gopgsession.SessionManager) http.HandlerFunc {
                 http.Error(w, "Failed to retrieve session", http.StatusInternalServerError)
                 return
             }
-
             // Place for user business logic
             currentPreferences, _ := session.GetAttribute("preferences")
             var preferences map[string]string
@@ -370,6 +456,101 @@ func addToCartHandler(sm *gopgsession.SessionManager) http.HandlerFunc {
     }
 }
 ```
+
+### Signed Cookies for DDOS Mitigation
+
+To reduce overhead when handling requests for non-existent sessions (which could be part of a DDOS attack), you can sign the session ID cookie. This allows you to verify the signature before attempting to retrieve the session from the database or cache.
+
+Here's an example of how to implement this:
+
+```go
+import (
+    "github.com/tzahifadida/go-pg-session"
+    "github.com/google/uuid"
+    "strings"
+    "fmt"
+)
+
+// Initialize the signer
+signerPool := gopgsession.NewHMACSHA256SignerPool("your-secret-key", 10)
+
+// When creating a session and setting the cookie
+func loginHandler(sm *gopgsession.SessionManager) http.HandlerFunc {
+    return func(w http.ResponseWriter, r *http.Request) {
+        // ... (authentication logic)
+
+        session, err := sm.CreateSession(r.Context(), userID, attributes)
+        if err != nil {
+            http.Error(w, "Failed to create session", http.StatusInternalServerError)
+            return
+        }
+
+        // Sign the session ID
+        sessionIDString := session.ID.String()
+        signature, err := signerPool.Sign(sessionIDString)
+        if err != nil {
+            http.Error(w, "Failed to sign session", http.StatusInternalServerError)
+            return
+        }
+
+        // Set the signed session cookie
+        http.SetCookie(w, &http.Cookie{
+            Name:     "session_id",
+            Value:    sessionIDString + "." + signature,
+            HttpOnly: true,
+            Secure:   true,
+            SameSite: http.SameSiteStrictMode,
+        })
+
+        w.WriteHeader(http.StatusOK)
+        w.Write([]byte("Login successful"))
+    }
+}
+
+// When verifying and retrieving a session
+func getSession(sm *gopgsession.SessionManager, r *http.Request) (*gopgsession.Session, error) {
+    cookie, err := r.Cookie("session_id")
+    if err != nil {
+        return nil, err
+    }
+
+    parts := strings.Split(cookie.Value, ".")
+    if len(parts) != 2 {
+        return nil, fmt.Errorf("invalid session cookie format")
+    }
+
+    sessionIDString, signature := parts[0], parts[1]
+
+    // Verify the signature
+    isValid, _, err := signerPool.Verify(sessionIDString, signature)
+    if err != nil || !isValid {
+        return nil, fmt.Errorf("invalid session signature")
+    }
+
+    // Parse the session ID
+    sessionID, err := uuid.Parse(sessionIDString)
+    if err != nil {
+        return nil, fmt.Errorf("invalid session ID")
+    }
+
+    // Retrieve the session
+    return sm.GetSession(r.Context(), sessionID)
+}
+```
+
+By signing the session cookie, you can quickly reject invalid or tampered requests without querying the database or cache. This approach can significantly reduce the impact of DDOS attacks targeting your session management system.
+
+## Performance Considerations
+
+The distributed memory cache in `go-pg-session` provides excellent read performance, as most session retrievals will be served from memory. Write operations are managed efficiently through batched updates and PostgreSQL's NOTIFY mechanism.
+
+In high-traffic scenarios, consider adjusting the following configuration parameters:
+
+- `CacheSize`: Increase this value to cache more sessions in memory, reducing database reads.
+- `LastAccessUpdateInterval` and `LastAccessUpdateBatchSize`: Tune these values to optimize the frequency and size of batched last-access updates.
+- `CleanupInterval`: Adjust this value to balance between timely session cleanup and database load.
+
+Remember to monitor your PostgreSQL server's performance and scale it accordingly as your application grows.
 
 ## Exported Functions and Configuration
 
