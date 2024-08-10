@@ -1246,3 +1246,102 @@ func retry(ctx context.Context, maxWait time.Duration, fn func() error) error {
 	}
 
 }
+func TestSessionManagerResilience(t *testing.T) {
+	ctx := context.Background()
+
+	// Start PostgreSQL container
+	postgres, pgConnString, err := startPostgresContainer(ctx)
+	require.NoError(t, err)
+	defer postgres.Terminate(ctx)
+
+	// Create a new SessionManager
+	cfg := DefaultConfig()
+	cfg.CreateSchemaIfMissing = true
+	cfg.CacheSize = 100
+	cfg.NotifyOnUpdates = true
+
+	sm, err := NewSessionManager(cfg, pgConnString)
+	require.NoError(t, err)
+	defer sm.Shutdown(context.Background())
+
+	// Create a test session
+	userID := uuid.New()
+	attributes := map[string]SessionAttributeValue{
+		"key": {Value: "initial_value"},
+	}
+	session, err := sm.CreateSession(context.Background(), userID, attributes)
+	require.NoError(t, err)
+
+	// Simulate PostgreSQL dropping all connections
+	t.Run("HandleConnectionDrop", func(t *testing.T) {
+		// Create a new connection to execute the termination command
+		db, err := sqlx.Connect("pgx", pgConnString)
+		require.NoError(t, err)
+		defer db.Close()
+
+		// Force disconnect all clients except our current connection
+		_, err = db.Exec("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE pid <> pg_backend_pid()")
+		require.NoError(t, err)
+
+		// Close our connection too
+		db.Close()
+
+		// Wait a bit for the SessionManager to detect the disconnection and re-establish the connection
+		time.Sleep(5 * time.Second)
+
+		// Try to get the session (this should trigger a refresh)
+		retrievedSession, err := sm.GetSessionWithVersionAndOptions(context.Background(), session.ID, session.Version, GetSessionOptions{ForceRefresh: true})
+		require.NoError(t, err)
+		assert.Equal(t, session.ID, retrievedSession.ID)
+		assert.Equal(t, "initial_value", retrievedSession.GetAttributes()["key"].Value)
+	})
+
+	// Test out-of-sync scenario
+	t.Run("HandleOutOfSync", func(t *testing.T) {
+		// Update the session directly in the database
+		_, err = sm.db.ExecContext(ctx, fmt.Sprintf(`
+			UPDATE %s
+			SET "updated_at" = NOW(), "version" = "version" + 1
+			WHERE "id" = $1
+		`, sm.getTableName("sessions")), session.ID)
+		require.NoError(t, err)
+
+		// Update an attribute directly in the database
+		_, err = sm.db.ExecContext(ctx, fmt.Sprintf(`
+			UPDATE %s
+			SET "value" = 'updated_value'
+			WHERE "session_id" = $1 AND "key" = 'key'
+		`, sm.getTableName("session_attributes")), session.ID)
+		require.NoError(t, err)
+
+		// Create a new connection to execute the termination command
+		db, err := sqlx.Connect("pgx", pgConnString)
+		require.NoError(t, err)
+		defer db.Close()
+
+		// Force disconnect all clients except our current connection
+		_, err = db.Exec("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE pid <> pg_backend_pid()")
+		require.NoError(t, err)
+
+		// Close our connection too
+		db.Close()
+
+		// Wait a bit for the SessionManager to detect the disconnection and re-establish the connection
+		time.Sleep(5 * time.Second)
+
+		// Try to get the session (this should trigger a refresh due to outOfSync)
+		retrievedSession, err := sm.GetSessionWithVersionAndOptions(context.Background(), session.ID, session.Version, GetSessionOptions{})
+		require.NoError(t, err)
+
+		// Check if the retrieved session has the updated attribute
+		attr, exists := retrievedSession.GetAttribute("key")
+		assert.True(t, exists)
+		assert.Equal(t, "updated_value", attr.Value)
+		assert.Equal(t, session.Version+1, retrievedSession.Version)
+
+		// Verify that outOfSync is set back to false
+		sm.mutex.RLock()
+		assert.False(t, sm.outOfSync)
+		sm.mutex.RUnlock()
+	})
+}

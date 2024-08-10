@@ -1465,7 +1465,9 @@ func (sm *SessionManager) Shutdown(ctx context.Context) error {
 		return fmt.Errorf("shutdown timed out: %v", ctx.Err())
 	}
 
-	sm.pgln.Shutdown()
+	if sm.Config.CustomPGLN == nil {
+		sm.pgln.Shutdown()
+	}
 
 	if err := sm.db.Close(); err != nil {
 		return fmt.Errorf("failed to close database connection: %v", err)
