@@ -60,8 +60,9 @@ func TestReadmeExamplesPrev(t *testing.T) {
 	require.NoError(t, err)
 	log.Printf("Retrieved session for user ID: %s", retrievedSession.UserID)
 
+	m := map[string]string{"theme": "light"}
 	// Example: Updating a Session Attribute
-	err = retrievedSession.UpdateAttribute("preferences", `{"theme":"light"}`, nil)
+	err = retrievedSession.UpdateAttribute("preferences", m, nil)
 	require.NoError(t, err)
 
 	updatedSession, err := sessionManager.UpdateSession(context.Background(), retrievedSession, true)

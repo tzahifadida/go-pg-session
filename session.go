@@ -876,10 +876,12 @@ func convertToString(value interface{}) (string, error) {
 	switch v := value.(type) {
 	case string:
 		return v, nil
-	case []byte:
-		return string(v), nil
 	default:
-		return fmt.Sprintf("%v", v), nil
+		marshaledValue, err := json.Marshal(value)
+		if err != nil {
+			return "", fmt.Errorf("failed to marshal attribute value: %w", err)
+		}
+		return string(marshaledValue), nil
 	}
 }
 
