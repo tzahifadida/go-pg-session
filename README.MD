@@ -122,7 +122,8 @@ These results demonstrate that `go-pg-session` is particularly well-suited for a
 
 Remember that performance can vary based on hardware, network conditions, and specific use cases. It's always recommended to benchmark in your specific environment for the most accurate results.
 
-Note: A would be go-pg-session for redis (or go-redis-session) could outperform go-pg-session when writing for sure, but the aim of this library is to use only PostgreSQL without additional services like redis. Moreover, since sessions are mostly read oriented, this is less of an advantage. It is possible that a go-redis-session would be great for developers who use redis already and may be developed if there is a demand.  
+Note: A would be go-pg-session for redis (or go-redis-session) could outperform go-pg-session when writing for sure, but the aim of this library is to use only PostgreSQL without additional services like redis. Moreover, since sessions are mostly read oriented, this is less of an advantage. It is possible that a go-redis-session would be great for developers who use redis already and may be developed if there is a demand.
+
 ## Installation
 
 To install the package, run:
@@ -186,7 +187,7 @@ ctx := context.Background()
 userID := uuid.New()
 attributes := map[string]gopgsession.SessionAttributeValue{
     "role":        {Value: "admin"},
-    "preferences": {Value: `{"theme":"dark"}`},
+    "preferences": {Value: map[string]string{"theme": "dark"}},
 }
 
 session, err := sessionManager.CreateSession(ctx, userID, attributes)
@@ -202,19 +203,18 @@ log.Printf("Created session with ID: %s", session.ID)
 Retrieve a session by its ID. You can use either `GetSession` for simple retrieval or `GetSessionWithVersionAndOptions` for more control.
 
 ```go
-// Simple retrieval
-session, err := sessionManager.GetSession(ctx, sessionID)
-if err != nil {
-    log.Fatalf("Failed to retrieve session: %v", err)
-}
-
-// Advanced retrieval
 session, err := sessionManager.GetSessionWithVersionAndOptions(ctx, sessionID, 0, gopgsession.GetSessionOptions{})
 if err != nil {
     log.Fatalf("Failed to retrieve session: %v", err)
 }
 
-log.Printf("Retrieved session for user ID: %s", session.UserID)
+var preferences map[string]string
+_, err = session.GetAttributeAndRetainUnmarshaled("preferences", &preferences)
+if err != nil {
+    log.Fatalf("Failed to get preferences: %v", err)
+}
+
+log.Printf("User preferences: %v", preferences)
 ```
 
 ### Updating a Session Attribute
@@ -227,7 +227,14 @@ if err != nil {
     log.Fatalf("Failed to retrieve session: %v", err)
 }
 
-err = session.UpdateAttribute("preferences", `{"theme":"light"}`, nil)
+var preferences map[string]string
+_, err = session.GetAttributeAndRetainUnmarshaled("preferences", &preferences)
+if err != nil {
+    log.Fatalf("Failed to get preferences: %v", err)
+}
+
+preferences["theme"] = "light"
+err = session.UpdateAttribute("preferences", preferences, nil)
 if err != nil {
     log.Fatalf("Failed to update session attribute: %v", err)
 }
@@ -336,63 +343,66 @@ This example demonstrates how to use optimistic locking with `checkVersion=true`
 
 ```go
 func updateUserPreferences(sm *gopgsession.SessionManager) http.HandlerFunc {
-    return func(w http.ResponseWriter, r *http.Request) {
-        sessionID, _ := uuid.Parse(r.Cookie("session_id").Value)
-        newTheme := r.FormValue("theme")
+return func(w http.ResponseWriter, r *http.Request) {
+sessionID, _ := uuid.Parse(r.Cookie("session_id").Value)
+newTheme := r.FormValue("theme")
 
-        maxRetries := 3
-        for attempt := 0; attempt < maxRetries; attempt++ {
-            var session *gopgsession.Session
-            var err error
+maxRetries := 3
+for attempt := 0; attempt < maxRetries; attempt++ {
+var session *gopgsession.Session
+var err error
 
-            if attempt == 0 {
-                // On first attempt, use regular GetSession
-                session, err = sm.GetSession(r.Context(), sessionID)
-            } else {
-                // On retry, force refresh to get the latest version
-                session, err = sm.GetSessionWithVersionAndOptions(r.Context(), sessionID, 0, gopgsession.GetSessionOptions{ForceRefresh: true})
-            }
+if attempt == 0 {
+// On first attempt, use regular GetSession
+session, err = sm.GetSession(r.Context(), sessionID)
+} else {
+// On retry, force refresh to get the latest version
+session, err = sm.GetSessionWithVersionAndOptions(r.Context(), sessionID, 0, gopgsession.GetSessionOptions{ForceRefresh: true})
+}
 
-            if err != nil {
-                http.Error(w, "Failed to retrieve session", http.StatusInternalServerError)
-                return
-            }
-            // Place for user business logic
-            currentPreferences, _ := session.GetAttribute("preferences")
-            var preferences map[string]string
-            json.Unmarshal([]byte(currentPreferences.Value), &preferences)
-            
-            // Update preferences
-            preferences["theme"] = newTheme
-            // ... other preference updates ...
+if err != nil {
+http.Error(w, "Failed to retrieve session", http.StatusInternalServerError)
+return
+}
 
-            // Prepare updated preferences
-            updatedPreferences, _ := json.Marshal(preferences)
-            err = session.UpdateAttribute("preferences", string(updatedPreferences), nil)
-            if err != nil {
-                http.Error(w, "Failed to update preferences", http.StatusInternalServerError)
-                return
-            }
+// Place for user business logic
+var preferences map[string]string
+_, err = session.GetAttributeAndRetainUnmarshaled("preferences", &preferences)
+if err != nil {
+http.Error(w, "Failed to get preferences", http.StatusInternalServerError)
+return
+}
 
-            // Try to update with version check
-            _, err = sm.UpdateSession(r.Context(), session, true)
-            if err == gopgsession.ErrSessionVersionIsOutdated {
-                // Version conflict, retry
-                continue
-            }
-            if err != nil {
-                http.Error(w, "Failed to save session", http.StatusInternalServerError)
-                return
-            }
+// Update preferences
+preferences["theme"] = newTheme
+// ... other preference updates ...
 
-            // Success
-            w.WriteHeader(http.StatusOK)
-            w.Write([]byte("Preferences updated successfully"))
-            return
-        }
+// Update the preferences attribute
+err = session.UpdateAttribute("preferences", preferences, nil)
+if err != nil {
+http.Error(w, "Failed to update preferences", http.StatusInternalServerError)
+return
+}
 
-        http.Error(w, "Failed to update preferences after max retries", http.StatusConflict)
-    }
+// Try to update with version check
+_, err = sm.UpdateSession(r.Context(), session, true)
+if err == gopgsession.ErrSessionVersionIsOutdated {
+// Version conflict, retry
+continue
+}
+if err != nil {
+http.Error(w, "Failed to save session", http.StatusInternalServerError)
+return
+}
+
+// Success
+w.WriteHeader(http.StatusOK)
+w.Write([]byte("Preferences updated successfully"))
+return
+}
+
+http.Error(w, "Failed to update preferences after max retries", http.StatusConflict)
+}
 }
 ```
 
@@ -402,58 +412,58 @@ Here's a refined example of handling concurrent updates to a session, useful for
 
 ```go
 func addToCartHandler(sm *gopgsession.SessionManager) http.HandlerFunc {
-    return func(w http.ResponseWriter, r *http.Request) {
-        sessionID, _ := uuid.Parse(r.Cookie("session_id").Value)
-        itemID := r.FormValue("item_id")
+return func(w http.ResponseWriter, r *http.Request) {
+sessionID, _ := uuid.Parse(r.Cookie("session_id").Value)
+itemID := r.FormValue("item_id")
 
-        maxRetries := 3
-        for attempt := 0; attempt < maxRetries; attempt++ {
-            var session *gopgsession.Session
-            var err error
+maxRetries := 3
+for attempt := 0; attempt < maxRetries; attempt++ {
+var session *gopgsession.Session
+var err error
 
-            if attempt == 0 {
-                session, err = sm.GetSession(r.Context(), sessionID)
-            } else {
-                session, err = sm.GetSessionWithVersionAndOptions(r.Context(), sessionID, 0, gopgsession.GetSessionOptions{ForceRefresh: true})
-            }
+if attempt == 0 {
+session, err = sm.GetSession(r.Context(), sessionID)
+} else {
+session, err = sm.GetSessionWithVersionAndOptions(r.Context(), sessionID, 0, gopgsession.GetSessionOptions{ForceRefresh: true})
+}
 
-            if err != nil {
-                http.Error(w, "Failed to retrieve session", http.StatusInternalServerError)
-                return
-            }
+if err != nil {
+http.Error(w, "Failed to retrieve session", http.StatusInternalServerError)
+return
+}
 
-            // Business logic: Update cart
-            cart, exists := session.GetAttribute("cart")
-            var cartItems []string
-            if exists {
-                json.Unmarshal([]byte(cart.Value), &cartItems)
-            }
-            cartItems = append(cartItems, itemID)
-            cartJSON, _ := json.Marshal(cartItems)
+// Business logic: Update cart
+var cartItems []string
+_, err = session.GetAttributeAndRetainUnmarshaled("cart", &cartItems)
+if err != nil && err.Error() != "attribute cart not found" {
+http.Error(w, "Failed to get cart", http.StatusInternalServerError)
+return
+}
+cartItems = append(cartItems, itemID)
 
-            err = session.UpdateAttribute("cart", string(cartJSON), nil)
-            if err != nil {
-                http.Error(w, "Failed to update cart", http.StatusInternalServerError)
-                return
-            }
+err = session.UpdateAttribute("cart", cartItems, nil)
+if err != nil {
+http.Error(w, "Failed to update cart", http.StatusInternalServerError)
+return
+}
 
-            _, err = sm.UpdateSession(r.Context(), session, true)
-            if err == gopgsession.ErrSessionVersionIsOutdated {
-                continue // Retry
-            }
-            if err != nil {
-                http.Error(w, "Failed to save session", http.StatusInternalServerError)
-                return
-            }
+_, err = sm.UpdateSession(r.Context(), session, true)
+if err == gopgsession.ErrSessionVersionIsOutdated {
+continue // Retry
+}
+if err != nil {
+http.Error(w, "Failed to save session", http.StatusInternalServerError)
+return
+}
 
-            // Success
-            w.WriteHeader(http.StatusOK)
-            w.Write([]byte("Item added to cart"))
-            return
-        }
+// Success
+w.WriteHeader(http.StatusOK)
+w.Write([]byte("Item added to cart"))
+return
+}
 
-        http.Error(w, "Failed to add item to cart after max retries", http.StatusConflict)
-    }
+http.Error(w, "Failed to add item to cart after max retries", http.StatusConflict)
+}
 }
 ```
 
@@ -465,10 +475,10 @@ Here's an example of how to implement this:
 
 ```go
 import (
-    "github.com/tzahifadida/go-pg-session"
-    "github.com/google/uuid"
-    "strings"
-    "fmt"
+"github.com/tzahifadida/go-pg-session"
+"github.com/google/uuid"
+"strings"
+"fmt"
 )
 
 // Initialize the signer
@@ -476,65 +486,65 @@ signerPool := gopgsession.NewHMACSHA256SignerPool("your-secret-key", 10)
 
 // When creating a session and setting the cookie
 func loginHandler(sm *gopgsession.SessionManager) http.HandlerFunc {
-    return func(w http.ResponseWriter, r *http.Request) {
-        // ... (authentication logic)
+return func(w http.ResponseWriter, r *http.Request) {
+// ... (authentication logic)
 
-        session, err := sm.CreateSession(r.Context(), userID, attributes)
-        if err != nil {
-            http.Error(w, "Failed to create session", http.StatusInternalServerError)
-            return
-        }
+session, err := sm.CreateSession(r.Context(), userID, attributes)
+if err != nil {
+http.Error(w, "Failed to create session", http.StatusInternalServerError)
+return
+}
 
-        // Sign the session ID
-        sessionIDString := session.ID.String()
-        signature, err := signerPool.Sign(sessionIDString)
-        if err != nil {
-            http.Error(w, "Failed to sign session", http.StatusInternalServerError)
-            return
-        }
+// Sign the session ID
+sessionIDString := session.ID.String()
+signature, err := signerPool.Sign(sessionIDString)
+if err != nil {
+http.Error(w, "Failed to sign session", http.StatusInternalServerError)
+return
+}
 
-        // Set the signed session cookie
-        http.SetCookie(w, &http.Cookie{
-            Name:     "session_id",
-            Value:    sessionIDString + "." + signature,
-            HttpOnly: true,
-            Secure:   true,
-            SameSite: http.SameSiteStrictMode,
-        })
+// Set the signed session cookie
+http.SetCookie(w, &http.Cookie{
+Name:     "session_id",
+Value:    sessionIDString + "." + signature,
+HttpOnly: true,
+Secure:   true,
+SameSite: http.SameSiteStrictMode,
+})
 
-        w.WriteHeader(http.StatusOK)
-        w.Write([]byte("Login successful"))
-    }
+w.WriteHeader(http.StatusOK)
+w.Write([]byte("Login successful"))
+}
 }
 
 // When verifying and retrieving a session
 func getSession(sm *gopgsession.SessionManager, r *http.Request) (*gopgsession.Session, error) {
-    cookie, err := r.Cookie("session_id")
-    if err != nil {
-        return nil, err
-    }
+cookie, err := r.Cookie("session_id")
+if err != nil {
+return nil, err
+}
 
-    parts := strings.Split(cookie.Value, ".")
-    if len(parts) != 2 {
-        return nil, fmt.Errorf("invalid session cookie format")
-    }
+parts := strings.Split(cookie.Value, ".")
+if len(parts) != 2 {
+return nil, fmt.Errorf("invalid session cookie format")
+}
 
-    sessionIDString, signature := parts[0], parts[1]
+sessionIDString, signature := parts[0], parts[1]
 
-    // Verify the signature
-    isValid, _, err := signerPool.Verify(sessionIDString, signature)
-    if err != nil || !isValid {
-        return nil, fmt.Errorf("invalid session signature")
-    }
+// Verify the signature
+isValid, _, err := signerPool.Verify(sessionIDString, signature)
+if err != nil || !isValid {
+return nil, fmt.Errorf("invalid session signature")
+}
 
-    // Parse the session ID
-    sessionID, err := uuid.Parse(sessionIDString)
-    if err != nil {
-        return nil, fmt.Errorf("invalid session ID")
-    }
+// Parse the session ID
+sessionID, err := uuid.Parse(sessionIDString)
+if err != nil {
+return nil, fmt.Errorf("invalid session ID")
+}
 
-    // Retrieve the session
-    return sm.GetSession(r.Context(), sessionID)
+// Retrieve the session
+return sm.GetSession(r.Context(), sessionID)
 }
 ```
 
@@ -650,6 +660,41 @@ Retrieves a specific attribute from the session.
 
 ```go
 func (s *Session) GetAttribute(key string) (SessionAttributeValue, bool)
+```
+
+#### `GetAttributeAndRetainUnmarshaled`
+
+Retrieves a specific attribute, unmarshals it if necessary, and retains the unmarshaled value in memory for future use.
+
+```go
+func (s *Session) GetAttributeAndRetainUnmarshaled(key string, v interface{}) (SessionAttributeValue, error)
+```
+
+This method is particularly useful for attributes that are frequently accessed and expensive to unmarshal. It provides the following benefits:
+
+1. **Lazy Unmarshaling**: Attributes are unmarshaled only when requested, saving processing time for unused attributes.
+2. **Caching**: Once unmarshaled, the value is retained in memory, improving performance for subsequent accesses.
+3. **Type Safety**: The method uses Go's type system to unmarshal into the correct type.
+4. **Efficiency**: For string attributes, it avoids unnecessary unmarshaling.
+5. **Thread-Safety**: The method is safe to use in concurrent environments.
+
+Usage example:
+
+```go
+var preferences struct {
+Theme string `json:"theme"`
+Language string `json:"language"`
+}
+
+attr, err := session.GetAttributeAndRetainUnmarshaled("preferences", &preferences)
+if err != nil {
+log.Printf("Failed to get preferences: %v", err)
+return
+}
+
+log.Printf("User preferences: Theme=%s, Language=%s", preferences.Theme, preferences.Language)
+
+// The unmarshaled value is now cached in the session for future use
 ```
 
 ## Contributing

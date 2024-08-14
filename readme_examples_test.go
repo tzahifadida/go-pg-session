@@ -2,7 +2,6 @@ package gopgsession
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -37,7 +36,7 @@ func TestReadmeExamples(t *testing.T) {
 		userID := uuid.New()
 		attributes := map[string]SessionAttributeValue{
 			"role":        {Value: "admin"},
-			"preferences": {Value: `{"theme":"dark"}`},
+			"preferences": {Value: map[string]string{"theme": "dark"}},
 		}
 
 		session, err := sessionManager.CreateSession(context.Background(), userID, attributes)
@@ -50,16 +49,21 @@ func TestReadmeExamples(t *testing.T) {
 		assert.Equal(t, userID, retrievedSession.UserID)
 
 		// Updating a Session Attribute
-		err = retrievedSession.UpdateAttribute("preferences", `{"theme":"light"}`, nil)
+		var preferences map[string]string
+		_, err = retrievedSession.GetAttributeAndRetainUnmarshaled("preferences", &preferences)
+		require.NoError(t, err)
+		preferences["theme"] = "light"
+		err = retrievedSession.UpdateAttribute("preferences", preferences, nil)
 		require.NoError(t, err)
 
 		updatedSession, err := sessionManager.UpdateSession(context.Background(), retrievedSession, true)
 		require.NoError(t, err)
 
 		// Verify the updated attribute
-		preferences, ok := updatedSession.GetAttribute("preferences")
-		require.True(t, ok)
-		assert.Equal(t, `{"theme":"light"}`, preferences.Value)
+		var updatedPreferences map[string]string
+		_, err = updatedSession.GetAttributeAndRetainUnmarshaled("preferences", &updatedPreferences)
+		require.NoError(t, err)
+		assert.Equal(t, "light", updatedPreferences["theme"])
 
 		// Deleting a Session
 		err = sessionManager.DeleteSession(context.Background(), updatedSession.ID)
@@ -121,8 +125,9 @@ func TestReadmeExamples(t *testing.T) {
 
 		// First, create a session
 		userID := uuid.New()
+		initialPreferences := map[string]string{"theme": "dark"}
 		session, err := sessionManager.CreateSession(context.Background(), userID, map[string]SessionAttributeValue{
-			"preferences": {Value: `{"theme":"dark"}`},
+			"preferences": {Value: initialPreferences},
 		})
 		require.NoError(t, err)
 
@@ -142,12 +147,11 @@ func TestReadmeExamples(t *testing.T) {
 		// Verify the update
 		updatedSession, err := sessionManager.GetSession(context.Background(), session.ID)
 		require.NoError(t, err)
-		preferences, ok := updatedSession.GetAttribute("preferences")
-		require.True(t, ok)
-		var prefsMap map[string]string
-		err = json.Unmarshal([]byte(preferences.Value), &prefsMap)
+
+		var updatedPreferences map[string]string
+		_, err = updatedSession.GetAttributeAndRetainUnmarshaled("preferences", &updatedPreferences)
 		require.NoError(t, err)
-		assert.Equal(t, "light", prefsMap["theme"])
+		assert.Equal(t, "light", updatedPreferences["theme"])
 	})
 
 	t.Run("AddToCartHandler", func(t *testing.T) {
@@ -174,16 +178,12 @@ func TestReadmeExamples(t *testing.T) {
 		// Verify the cart update
 		updatedSession, err := sessionManager.GetSession(context.Background(), session.ID)
 		require.NoError(t, err)
-		cart, ok := updatedSession.GetAttribute("cart")
-		require.True(t, ok)
 		var cartItems []string
-		err = json.Unmarshal([]byte(cart.Value), &cartItems)
+		_, err = updatedSession.GetAttributeAndRetainUnmarshaled("cart", &cartItems)
 		require.NoError(t, err)
 		assert.Contains(t, cartItems, "123")
 	})
 }
-
-// Add this to your existing readme_examples_test.go file
 
 func TestSignedCookiesExample(t *testing.T) {
 	// Start PostgreSQL container
@@ -253,9 +253,10 @@ func TestSignedCookiesExample(t *testing.T) {
 		assert.NotNil(t, session)
 
 		// Verify session data
-		username, ok := session.GetAttribute("username")
-		assert.True(t, ok)
-		assert.Equal(t, "testuser", username.Value)
+		var username string
+		_, err = session.GetAttributeAndRetainUnmarshaled("username", &username)
+		require.NoError(t, err)
+		assert.Equal(t, "testuser", username)
 	})
 
 	// Test with invalid signature
@@ -270,74 +271,6 @@ func TestSignedCookiesExample(t *testing.T) {
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "invalid session signature")
 	})
-}
-
-func loginHandlerWithSignedCookie(sm *SessionManager, signerPool *HMACSHA256SignerPool) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		username := r.FormValue("username")
-		//password := r.FormValue("password")
-
-		userID := uuid.New() // In a real scenario, this would be fetched from a database
-
-		attributes := map[string]SessionAttributeValue{
-			"username":   {Value: username},
-			"last_login": {Value: time.Now().Format(time.RFC3339)},
-		}
-		session, err := sm.CreateSession(r.Context(), userID, attributes)
-		if err != nil {
-			http.Error(w, "Failed to create session", http.StatusInternalServerError)
-			return
-		}
-
-		// Sign the session ID
-		sessionIDString := session.ID.String()
-		signature, err := signerPool.Sign(sessionIDString)
-		if err != nil {
-			http.Error(w, "Failed to sign session", http.StatusInternalServerError)
-			return
-		}
-
-		// Set the signed session cookie
-		http.SetCookie(w, &http.Cookie{
-			Name:     "session_id",
-			Value:    sessionIDString + "." + signature,
-			HttpOnly: true,
-			Secure:   true,
-			SameSite: http.SameSiteStrictMode,
-		})
-
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("Login successful"))
-	}
-}
-
-func getSessionWithSignedCookie(sm *SessionManager, signerPool *HMACSHA256SignerPool, r *http.Request) (*Session, error) {
-	cookie, err := r.Cookie("session_id")
-	if err != nil {
-		return nil, err
-	}
-
-	parts := strings.Split(cookie.Value, ".")
-	if len(parts) != 2 {
-		return nil, fmt.Errorf("invalid session cookie format")
-	}
-
-	sessionIDString, signature := parts[0], parts[1]
-
-	// Verify the signature
-	isValid, _, err := signerPool.Verify(sessionIDString, signature)
-	if err != nil || !isValid {
-		return nil, fmt.Errorf("invalid session signature")
-	}
-
-	// Parse the session ID
-	sessionID, err := uuid.Parse(sessionIDString)
-	if err != nil {
-		return nil, fmt.Errorf("invalid session ID")
-	}
-
-	// Retrieve the session
-	return sm.GetSession(r.Context(), sessionID)
 }
 
 // Handler implementations
@@ -438,13 +371,15 @@ func updateUserPreferences(sm *SessionManager) http.HandlerFunc {
 				return
 			}
 
-			currentPreferences, _ := session.GetAttribute("preferences")
 			var preferences map[string]string
-			json.Unmarshal([]byte(currentPreferences.Value), &preferences)
+			_, err = session.GetAttributeAndRetainUnmarshaled("preferences", &preferences)
+			if err != nil {
+				http.Error(w, "Failed to get preferences", http.StatusInternalServerError)
+				return
+			}
 
 			preferences["theme"] = newTheme
-			updatedPreferences, _ := json.Marshal(preferences)
-			err = session.UpdateAttribute("preferences", string(updatedPreferences), nil)
+			err = session.UpdateAttribute("preferences", preferences, nil)
 			if err != nil {
 				http.Error(w, "Failed to update preferences", http.StatusInternalServerError)
 				return
@@ -500,15 +435,15 @@ func addToCartHandler(sm *SessionManager) http.HandlerFunc {
 				return
 			}
 
-			cart, exists := session.GetAttribute("cart")
 			var cartItems []string
-			if exists {
-				json.Unmarshal([]byte(cart.Value), &cartItems)
+			_, err = session.GetAttributeAndRetainUnmarshaled("cart", &cartItems)
+			if err != nil && err.Error() != "attribute cart not found" {
+				http.Error(w, "Failed to get cart", http.StatusInternalServerError)
+				return
 			}
 			cartItems = append(cartItems, itemID)
-			cartJSON, _ := json.Marshal(cartItems)
 
-			err = session.UpdateAttribute("cart", string(cartJSON), nil)
+			err = session.UpdateAttribute("cart", cartItems, nil)
 			if err != nil {
 				http.Error(w, "Failed to update cart", http.StatusInternalServerError)
 				return
@@ -530,6 +465,73 @@ func addToCartHandler(sm *SessionManager) http.HandlerFunc {
 
 		http.Error(w, "Failed to add item to cart after max retries", http.StatusConflict)
 	}
+}
+func loginHandlerWithSignedCookie(sm *SessionManager, signerPool *HMACSHA256SignerPool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		username := r.FormValue("username")
+		//password := r.FormValue("password")
+
+		userID := uuid.New() // In a real scenario, this would be fetched from a database
+
+		attributes := map[string]SessionAttributeValue{
+			"username":   {Value: username},
+			"last_login": {Value: time.Now().Format(time.RFC3339)},
+		}
+		session, err := sm.CreateSession(r.Context(), userID, attributes)
+		if err != nil {
+			http.Error(w, "Failed to create session", http.StatusInternalServerError)
+			return
+		}
+
+		// Sign the session ID
+		sessionIDString := session.ID.String()
+		signature, err := signerPool.Sign(sessionIDString)
+		if err != nil {
+			http.Error(w, "Failed to sign session", http.StatusInternalServerError)
+			return
+		}
+
+		// Set the signed session cookie
+		http.SetCookie(w, &http.Cookie{
+			Name:     "session_id",
+			Value:    sessionIDString + "." + signature,
+			HttpOnly: true,
+			Secure:   true,
+			SameSite: http.SameSiteStrictMode,
+		})
+
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("Login successful"))
+	}
+}
+
+func getSessionWithSignedCookie(sm *SessionManager, signerPool *HMACSHA256SignerPool, r *http.Request) (*Session, error) {
+	cookie, err := r.Cookie("session_id")
+	if err != nil {
+		return nil, err
+	}
+
+	parts := strings.Split(cookie.Value, ".")
+	if len(parts) != 2 {
+		return nil, fmt.Errorf("invalid session cookie format")
+	}
+
+	sessionIDString, signature := parts[0], parts[1]
+
+	// Verify the signature
+	isValid, _, err := signerPool.Verify(sessionIDString, signature)
+	if err != nil || !isValid {
+		return nil, fmt.Errorf("invalid session signature")
+	}
+
+	// Parse the session ID
+	sessionID, err := uuid.Parse(sessionIDString)
+	if err != nil {
+		return nil, fmt.Errorf("invalid session ID")
+	}
+
+	// Retrieve the session
+	return sm.GetSession(r.Context(), sessionID)
 }
 
 // startPostgresContainer function should be implemented here or imported from your test utilities

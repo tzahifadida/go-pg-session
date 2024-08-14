@@ -19,6 +19,7 @@ import (
 	"github.com/jonboulle/clockwork"
 	"github.com/tzahifadida/pgln"
 	"log"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -118,7 +119,8 @@ type SessionAttributeRecord struct {
 }
 
 type SessionAttributeValue struct {
-	Value     string
+	Value     any
+	Marshaled bool
 	ExpiresAt *time.Time
 }
 
@@ -407,10 +409,19 @@ func (sm *SessionManager) CreateSession(ctx context.Context, userID uuid.UUID, a
 	}
 
 	for key, attr := range attributes {
+		var marshaledValue string
+		if attr.Marshaled {
+			marshaledValue = attr.Value.(string)
+		} else {
+			marshaledValue, err = convertToString(attr.Value)
+			if err != nil {
+				return nil, fmt.Errorf("failed to marshal attribute value on create session: %w", err)
+			}
+		}
 		attributeRecord := SessionAttributeRecord{
 			SessionID: sessionID,
 			Key:       key,
-			Value:     attr.Value,
+			Value:     marshaledValue,
 			ExpiresAt: attr.ExpiresAt,
 		}
 		query := fmt.Sprintf(`
@@ -577,7 +588,16 @@ func (sm *SessionManager) UpdateSession(ctx context.Context, session *Session, c
                 SET "value" = EXCLUDED."value", "expires_at" = EXCLUDED."expires_at"
             `, sm.getTableName("session_attributes"))
 
-			_, err = tx.ExecContext(ctx, query, session.ID, key, attr.Value, attr.ExpiresAt)
+			var marshaledValue string
+			if attr.Marshaled {
+				marshaledValue = attr.Value.(string)
+			} else {
+				marshaledValue, err = convertToString(attr.Value)
+				if err != nil {
+					return nil, fmt.Errorf("failed to marshal attribute value on update session: %w", err)
+				}
+			}
+			_, err = tx.ExecContext(ctx, query, session.ID, key, marshaledValue, attr.ExpiresAt)
 			if err != nil {
 				return nil, fmt.Errorf("failed to update session attribute: %v", err)
 			}
@@ -866,7 +886,7 @@ func (sm *SessionManager) listAttributes(ctx context.Context, sessionID uuid.UUI
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan attribute row: %v", err)
 		}
-		attributes[key] = SessionAttributeValue{Value: value, ExpiresAt: expiresAt}
+		attributes[key] = SessionAttributeValue{Value: value, ExpiresAt: expiresAt, Marshaled: true}
 	}
 
 	return attributes, nil
@@ -1062,8 +1082,8 @@ func (s *Session) UpdateAttribute(key string, value interface{}, expiresAt *time
 	if len(valueStr) > s.sm.Config.MaxAttributeLength {
 		return fmt.Errorf("attribute value for key %s exceeds max length of %d", key, s.sm.Config.MaxAttributeLength)
 	}
-
-	s.attributes[key] = SessionAttributeValue{Value: valueStr, ExpiresAt: expiresAt}
+	// we don't store it as
+	s.attributes[key] = SessionAttributeValue{Value: value, ExpiresAt: expiresAt, Marshaled: false}
 	s.changed[key] = true
 	return nil
 }
@@ -1095,6 +1115,104 @@ func (s *Session) GetAttributes() map[string]SessionAttributeValue {
 func (s *Session) GetAttribute(key string) (SessionAttributeValue, bool) {
 	attr, ok := s.attributes[key]
 	return attr, ok
+}
+
+// GetAttributeAndRetainUnmarshaled retrieves a specific attribute, unmarshals it if necessary,
+// and retains the unmarshaled value in memory for future use. This method is optimized to
+// prevent repeated unmarshaling of the same attribute as long as the session remains in memory.
+//
+// It's particularly beneficial for attributes that are frequently accessed and expensive to unmarshal.
+// By retaining the unmarshaled value, subsequent calls to this method for the same attribute will
+// return the cached unmarshaled value without the need for repeated unmarshaling operations.
+//
+// The method also ensures thread-safety when updating the shared cache, only doing so if the
+// cached value hasn't been modified by another goroutine.
+//
+// Parameters:
+//   - key: The key of the attribute to retrieve and unmarshal.
+//   - v: A pointer to the struct where the unmarshaled value will be stored.
+//
+// Returns:
+//   - A copy of the SessionAttributeValue (which may be newly unmarshaled or previously cached)
+//     and an error if any occurred during the retrieval or unmarshaling process.
+//
+// Usage:
+//
+//	var myStruct MyStructType
+//	attr, err := session.GetAttributeAndRetainUnmarshaled("myKey", &myStruct)
+//	if err != nil {
+//	    // Handle error
+//	}
+//	// Use myStruct and attr as needed
+func (s *Session) GetAttributeAndRetainUnmarshaled(key string, v interface{}) (SessionAttributeValue, error) {
+	attr, ok := s.attributes[key]
+	if !ok {
+		return SessionAttributeValue{}, fmt.Errorf("attribute %s not found", key)
+	}
+
+	if !attr.Marshaled {
+		err := setValue(v, attr.Value)
+		if err != nil {
+			return SessionAttributeValue{}, fmt.Errorf("failed to set value (unmarshaled) to interface: %w", err)
+		}
+		return attr, nil
+	}
+
+	var unmarshaledValue interface{}
+	switch v.(type) {
+	case *string:
+		*v.(*string) = attr.Value.(string)
+		unmarshaledValue = *v.(*string)
+	default:
+		err := json.Unmarshal([]byte(attr.Value.(string)), v)
+		if err != nil {
+			return SessionAttributeValue{}, fmt.Errorf("failed to unmarshal attribute %s: %w", key, err)
+		}
+		unmarshaledValue = reflect.ValueOf(v).Elem().Interface()
+	}
+
+	unmarshaled := SessionAttributeValue{
+		Value:     unmarshaledValue,
+		ExpiresAt: attr.ExpiresAt,
+		Marshaled: false,
+	}
+
+	s.attributes[key] = unmarshaled
+
+	s.sm.mutex.Lock()
+	defer s.sm.mutex.Unlock()
+
+	if item, exists := s.sm.cache[s.ID]; exists {
+		cachedAttr, ok := item.session.attributes[key]
+		if ok && cachedAttr.Marshaled {
+			// Only update if the cached value is still marshaled and the values are exactly the same
+			if cachedValue, ok := cachedAttr.Value.(string); ok && cachedValue == attr.Value.(string) {
+				item.session.attributes[key] = unmarshaled
+			}
+		}
+	}
+
+	return unmarshaled, nil
+}
+
+// setValue is a helper function to set the value of v to the given value
+func setValue(v interface{}, value interface{}) error {
+	rv := reflect.ValueOf(v)
+	if rv.Kind() != reflect.Ptr || rv.IsNil() {
+		return fmt.Errorf("v must be a non-nil pointer")
+	}
+	rv = rv.Elem()
+	if !rv.CanSet() {
+		return fmt.Errorf("v must be settable")
+	}
+
+	vv := reflect.ValueOf(value)
+	if !vv.Type().AssignableTo(rv.Type()) {
+		return fmt.Errorf("cannot assign %v to %v", vv.Type(), rv.Type())
+	}
+
+	rv.Set(vv)
+	return nil
 }
 func (s *Session) deepCopy() *Session {
 	copiedAttributes := make(map[string]SessionAttributeValue, len(s.attributes))

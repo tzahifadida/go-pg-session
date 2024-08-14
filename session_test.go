@@ -2,6 +2,7 @@ package gopgsession
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"github.com/google/uuid"
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -44,8 +45,8 @@ func TestReadmeExamplesPrev(t *testing.T) {
 	// Example: Creating a Session
 	userID := uuid.New()
 	attributes := map[string]SessionAttributeValue{
-		"role":        {Value: "admin"},
-		"preferences": {Value: `{"theme":"dark"}`},
+		"role":        {Value: "admin", Marshaled: false},
+		"preferences": {Value: map[string]string{"theme": "dark"}, Marshaled: false},
 	}
 
 	session, err := sessionManager.CreateSession(context.Background(), userID, attributes)
@@ -60,9 +61,9 @@ func TestReadmeExamplesPrev(t *testing.T) {
 	require.NoError(t, err)
 	log.Printf("Retrieved session for user ID: %s", retrievedSession.UserID)
 
-	m := map[string]string{"theme": "light"}
 	// Example: Updating a Session Attribute
-	err = retrievedSession.UpdateAttribute("preferences", m, nil)
+	newPreferences := map[string]string{"theme": "light"}
+	err = retrievedSession.UpdateAttribute("preferences", newPreferences, nil)
 	require.NoError(t, err)
 
 	updatedSession, err := sessionManager.UpdateSession(context.Background(), retrievedSession, true)
@@ -75,9 +76,12 @@ func TestReadmeExamplesPrev(t *testing.T) {
 	// Verify the updated attribute
 	finalSession, err := sessionManager.GetSessionWithVersionAndOptions(context.Background(), updatedSession.ID, updatedSession.Version, GetSessionOptions{})
 	require.NoError(t, err)
-	preferences, ok := finalSession.GetAttribute("preferences")
-	require.True(t, ok)
-	assert.Equal(t, `{"theme":"light"}`, preferences.Value)
+
+	var preferences map[string]string
+	attr, err := finalSession.GetAttributeAndRetainUnmarshaled("preferences", &preferences)
+	require.NoError(t, err)
+	assert.Equal(t, "light", preferences["theme"])
+	assert.False(t, attr.Marshaled)
 
 	// Example: Deleting a Session
 	err = sessionManager.DeleteSession(context.Background(), finalSession.ID)
@@ -130,8 +134,8 @@ func TestSessionManager(t *testing.T) {
 	t.Run("CreateSession", func(t *testing.T) {
 		userID := uuid.New()
 		attributes := map[string]SessionAttributeValue{
-			"key1": {Value: "value1"},
-			"key2": {Value: "42"},
+			"key1": {Value: "value1", Marshaled: false},
+			"key2": {Value: "42", Marshaled: false},
 		}
 
 		session, err := sm.CreateSession(context.Background(), userID, attributes)
@@ -145,8 +149,15 @@ func TestSessionManager(t *testing.T) {
 		retrievedSession, err := sm.GetSessionWithVersionAndOptions(context.Background(), session.ID, 1, GetSessionOptions{})
 		require.NoError(t, err)
 		assert.Equal(t, userID, retrievedSession.UserID)
-		assert.Equal(t, "value1", retrievedSession.GetAttributes()["key1"].Value)
-		assert.Equal(t, "42", retrievedSession.GetAttributes()["key2"].Value)
+
+		key1Value, ok := retrievedSession.GetAttributes()["key1"].Value.(string)
+		require.True(t, ok, "key1 value is not a string")
+		assert.Equal(t, "value1", key1Value)
+
+		key2Value, ok := retrievedSession.GetAttributes()["key2"].Value.(string)
+		require.True(t, ok, "key2 value is not a string")
+		assert.Equal(t, "42", key2Value)
+
 		assert.Equal(t, 1, retrievedSession.Version)
 	})
 
@@ -154,7 +165,7 @@ func TestSessionManager(t *testing.T) {
 	t.Run("GetSessionWithVersionAndOptions", func(t *testing.T) {
 		userID := uuid.New()
 		attributes := map[string]SessionAttributeValue{
-			"key": {Value: "value"},
+			"key": {Value: "value", Marshaled: false},
 		}
 
 		session, err := sm.CreateSession(context.Background(), userID, attributes)
@@ -166,7 +177,9 @@ func TestSessionManager(t *testing.T) {
 		retrievedSession, err := sm.GetSessionWithVersionAndOptions(context.Background(), session.ID, 1, GetSessionOptions{DoNotUpdateSessionLastAccess: false})
 		require.NoError(t, err)
 		assert.Equal(t, userID, retrievedSession.UserID)
-		assert.Equal(t, "value", retrievedSession.GetAttributes()["key"].Value)
+		keyValue, ok := retrievedSession.GetAttributes()["key"].Value.(string)
+		require.True(t, ok, "key value is not a string")
+		assert.Equal(t, "value", keyValue)
 		time.Sleep(1 * time.Second)
 		sm.processLastAccessUpdates()
 
@@ -183,7 +196,7 @@ func TestSessionManager(t *testing.T) {
 	t.Run("UpdateSession", func(t *testing.T) {
 		userID := uuid.New()
 		attributes := map[string]SessionAttributeValue{
-			"key": {Value: "value"},
+			"key": {Value: "value", Marshaled: false},
 		}
 
 		session, err := sm.CreateSession(context.Background(), userID, attributes)
@@ -210,8 +223,12 @@ func TestSessionManager(t *testing.T) {
 
 		finalSession, err := sm.GetSessionWithVersionAndOptions(context.Background(), session.ID, 2, GetSessionOptions{})
 		require.NoError(t, err)
-		assert.Equal(t, "new_value", finalSession.GetAttributes()["key"].Value)
-		assert.Equal(t, "another_value", finalSession.GetAttributes()["new_key"].Value)
+		keyValue, ok := finalSession.GetAttributes()["key"].Value.(string)
+		require.True(t, ok, "key value is not a string")
+		assert.Equal(t, "new_value", keyValue)
+		newKeyValue, ok := finalSession.GetAttributes()["new_key"].Value.(string)
+		require.True(t, ok, "new_key value is not a string")
+		assert.Equal(t, "another_value", newKeyValue)
 		assert.Equal(t, 2, finalSession.Version)
 	})
 
@@ -219,7 +236,7 @@ func TestSessionManager(t *testing.T) {
 	t.Run("DeleteSession", func(t *testing.T) {
 		userID := uuid.New()
 		attributes := map[string]SessionAttributeValue{
-			"key": {Value: "value"},
+			"key": {Value: "value", Marshaled: false},
 		}
 
 		session, err := sm.CreateSession(context.Background(), userID, attributes)
@@ -242,7 +259,7 @@ func TestSessionManager(t *testing.T) {
 	t.Run("DeleteAllUserSessions", func(t *testing.T) {
 		userID := uuid.New()
 		attributes := map[string]SessionAttributeValue{
-			"key": {Value: "value"},
+			"key": {Value: "value", Marshaled: false},
 		}
 
 		session1, err := sm.CreateSession(context.Background(), userID, attributes)
@@ -274,7 +291,7 @@ func TestSessionManager(t *testing.T) {
 	t.Run("EnforceMaxSessions", func(t *testing.T) {
 		userID := uuid.New()
 		attributes := map[string]SessionAttributeValue{
-			"key": {Value: "value"},
+			"key": {Value: "value", Marshaled: false},
 		}
 
 		session1, err := sm.CreateSession(context.Background(), userID, attributes)
@@ -314,7 +331,7 @@ func TestSessionManager(t *testing.T) {
 	t.Run("CleanupExpiredSessions", func(t *testing.T) {
 		userID := uuid.New()
 		attributes := map[string]SessionAttributeValue{
-			"key": {Value: "value"},
+			"key": {Value: "value", Marshaled: false},
 		}
 
 		// Create a session with a short expiration time
@@ -343,7 +360,7 @@ func TestSessionManager(t *testing.T) {
 	t.Run("RefreshCache", func(t *testing.T) {
 		userID := uuid.New()
 		attributes := map[string]SessionAttributeValue{
-			"key": {Value: "value"},
+			"key": {Value: "value", Marshaled: false},
 		}
 
 		session, err := sm.CreateSession(context.Background(), userID, attributes)
@@ -369,8 +386,8 @@ func TestSessionManager(t *testing.T) {
 	t.Run("DeleteAttribute", func(t *testing.T) {
 		userID := uuid.New()
 		attributes := map[string]SessionAttributeValue{
-			"key1": {Value: "value1"},
-			"key2": {Value: "value2"},
+			"key1": {Value: "value1", Marshaled: false},
+			"key2": {Value: "value2", Marshaled: false},
 		}
 
 		session, err := sm.CreateSession(context.Background(), userID, attributes)
@@ -401,7 +418,7 @@ func TestSessionManager(t *testing.T) {
 	t.Run("RemoveAllUserCachedSessionsFromAllNodes", func(t *testing.T) {
 		userID := uuid.New()
 		attributes := map[string]SessionAttributeValue{
-			"key": {Value: "value"},
+			"key": {Value: "value", Marshaled: false},
 		}
 
 		session1, err := sm.CreateSession(context.Background(), userID, attributes)
@@ -454,7 +471,7 @@ func TestSessionManager(t *testing.T) {
 	t.Run("SessionSigningAndVerification", func(t *testing.T) {
 		userID := uuid.New()
 		attributes := map[string]SessionAttributeValue{
-			"key": {Value: "value"},
+			"key": {Value: "value", Marshaled: false},
 		}
 
 		session, err := sm.CreateSession(context.Background(), userID, attributes)
@@ -491,8 +508,8 @@ func TestSessionManager(t *testing.T) {
 		userID := uuid.New()
 		now := fakeClock.Now()
 		attributes := map[string]SessionAttributeValue{
-			"permanent": {Value: "permanent_value", ExpiresAt: nil},
-			"expiring":  {Value: "expiring_value", ExpiresAt: &now},
+			"permanent": {Value: "permanent_value", Marshaled: false, ExpiresAt: nil},
+			"expiring":  {Value: "expiring_value", Marshaled: false, ExpiresAt: &now},
 		}
 		prevSessionExpiration := cfg.SessionExpiration
 		defer func() {
@@ -518,7 +535,9 @@ func TestSessionManager(t *testing.T) {
 		// The permanent attribute should still be there
 		permanentAttr, exists := retrievedSession.GetAttribute("permanent")
 		assert.True(t, exists)
-		assert.Equal(t, "permanent_value", permanentAttr.Value)
+		permanentValue, ok := permanentAttr.Value.(string)
+		require.True(t, ok, "permanent attribute value is not a string")
+		assert.Equal(t, "permanent_value", permanentValue)
 
 		// Add a new expiring attribute
 		futureTime := fakeClock.Now().Add(time.Hour)
@@ -533,7 +552,9 @@ func TestSessionManager(t *testing.T) {
 		require.NoError(t, err)
 		newExpiringAttr, exists := finalSession.GetAttribute("new_expiring")
 		assert.True(t, exists)
-		assert.Equal(t, "new_expiring_value", newExpiringAttr.Value)
+		newExpiringValue, ok := newExpiringAttr.Value.(string)
+		require.True(t, ok, "new_expiring attribute value is not a string")
+		assert.Equal(t, "new_expiring_value", newExpiringValue)
 
 		// Advance the clock past the new expiration time
 		fakeClock.Advance(1*time.Hour + 5*time.Minute)
@@ -555,7 +576,7 @@ func TestSessionManager(t *testing.T) {
 	t.Run("ConcurrentSessionUpdates", func(t *testing.T) {
 		userID := uuid.New()
 		attributes := map[string]SessionAttributeValue{
-			"counter": {Value: "0"},
+			"counter": {Value: "0", Marshaled: false},
 		}
 
 		session, err := sm.CreateSession(context.Background(), userID, attributes)
@@ -575,7 +596,10 @@ func TestSessionManager(t *testing.T) {
 					counterAttr, ok := retrievedSession.GetAttribute("counter")
 					require.True(t, ok)
 
-					counter, err := strconv.Atoi(counterAttr.Value)
+					counterValue, ok := counterAttr.Value.(string)
+					require.True(t, ok, "counter value is not a string")
+
+					counter, err := strconv.Atoi(counterValue)
 					require.NoError(t, err)
 
 					err = retrievedSession.UpdateAttribute("counter", strconv.Itoa(counter+1), nil)
@@ -602,7 +626,10 @@ func TestSessionManager(t *testing.T) {
 		finalCounterAttr, ok := finalSession.GetAttribute("counter")
 		require.True(t, ok)
 
-		finalCounter, err := strconv.Atoi(finalCounterAttr.Value)
+		finalCounterValue, ok := finalCounterAttr.Value.(string)
+		require.True(t, ok, "final counter value is not a string")
+
+		finalCounter, err := strconv.Atoi(finalCounterValue)
 		require.NoError(t, err)
 		assert.Equal(t, concurrentUpdates, finalCounter)
 	})
@@ -630,7 +657,7 @@ func TestSessionManagerWithRealClock(t *testing.T) {
 	t.Run("AutomaticCleanup", func(t *testing.T) {
 		userID := uuid.New()
 		attributes := map[string]SessionAttributeValue{
-			"key": {Value: "value"},
+			"key": {Value: "value", Marshaled: false},
 		}
 		prevSessionExpiration := cfg.SessionExpiration
 		defer func() {
@@ -653,7 +680,7 @@ func TestSessionManagerWithRealClock(t *testing.T) {
 	t.Run("AutomaticLastAccessUpdate", func(t *testing.T) {
 		userID := uuid.New()
 		attributes := map[string]SessionAttributeValue{
-			"key": {Value: "value"},
+			"key": {Value: "value", Marshaled: false},
 		}
 
 		session, err := sm.CreateSession(context.Background(), userID, attributes)
@@ -1156,6 +1183,154 @@ func TestUpdateSessionWithCheckVersion(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, 3, finalSession.Version)
 		assert.Equal(t, "another_value", finalSession.GetAttributes()["key"].Value)
+	})
+}
+func TestGetAttributeAndRetainUnmarshaled(t *testing.T) {
+	ctx := context.Background()
+
+	// Start PostgreSQL container
+	postgres, pgConnString, err := startPostgresContainer(ctx)
+	require.NoError(t, err)
+	defer postgres.Terminate(ctx)
+
+	// Create a new SessionManager
+	cfg := DefaultConfig()
+	cfg.CreateSchemaIfMissing = true
+	cfg.CacheSize = 100
+
+	sm, err := NewSessionManager(cfg, pgConnString)
+	require.NoError(t, err)
+	defer sm.Shutdown(context.Background())
+
+	// Create a test session with a complex attribute
+	userID := uuid.New()
+	type complexValueType struct {
+		Name  string
+		Age   int
+		Roles []string
+	}
+	complexValue := complexValueType{
+		Name:  "John Doe",
+		Age:   30,
+		Roles: []string{"admin", "user"},
+	}
+	complexValueJSON, err := json.Marshal(complexValue)
+	require.NoError(t, err)
+
+	attributes := map[string]SessionAttributeValue{
+		"simpleKey":  {Value: "simpleValue", Marshaled: false},
+		"complexKey": {Value: string(complexValueJSON), Marshaled: true},
+	}
+
+	session, err := sm.CreateSession(context.Background(), userID, attributes)
+	require.NoError(t, err)
+
+	t.Run("UnmarshalSimpleAttribute", func(t *testing.T) {
+		var simpleValue string
+		attr, err := session.GetAttributeAndRetainUnmarshaled("simpleKey", &simpleValue)
+		require.NoError(t, err)
+		assert.Equal(t, "simpleValue", simpleValue)
+		assert.Equal(t, "simpleValue", attr.Value)
+		assert.False(t, attr.Marshaled)
+	})
+
+	t.Run("UnmarshalComplexAttribute", func(t *testing.T) {
+		var unmarshaledValue complexValueType
+		attr, err := session.GetAttributeAndRetainUnmarshaled("complexKey", &unmarshaledValue)
+		require.NoError(t, err)
+		assert.Equal(t, complexValue, unmarshaledValue)
+		assert.Equal(t, complexValue, attr.Value)
+		assert.False(t, attr.Marshaled)
+
+		// Check if the attribute is now unmarshaled in the session
+		sessionAttr, ok := session.GetAttribute("complexKey")
+		require.True(t, ok)
+		assert.Equal(t, complexValue, sessionAttr.Value)
+		assert.False(t, sessionAttr.Marshaled)
+	})
+
+	t.Run("RetainUnmarshaledValue", func(t *testing.T) {
+		// First call to unmarshal
+		var value1 complexValueType
+		_, err := session.GetAttributeAndRetainUnmarshaled("complexKey", &value1)
+		require.NoError(t, err)
+
+		// Second call should return the already unmarshaled value
+		var value2 complexValueType
+		attr, err := session.GetAttributeAndRetainUnmarshaled("complexKey", &value2)
+		require.NoError(t, err)
+		assert.Equal(t, value1, value2)
+		assert.False(t, attr.Marshaled)
+	})
+
+	t.Run("CacheUpdateWithUnmarshaledValue", func(t *testing.T) {
+		// Force a cache update
+		sm.clearCache()
+		err := sm.refreshCache(context.Background())
+		require.NoError(t, err)
+
+		// Retrieve the session from cache
+		cachedSession, err := sm.GetSessionWithVersionAndOptions(context.Background(), session.ID, session.Version, GetSessionOptions{})
+		require.NoError(t, err)
+
+		// Unmarshal the complex attribute
+		var unmarshaledValue complexValueType
+		_, err = cachedSession.GetAttributeAndRetainUnmarshaled("complexKey", &unmarshaledValue)
+		require.NoError(t, err)
+
+		// Check if the cache was updated with the unmarshaled value
+		sm.mutex.RLock()
+		cachedItem, exists := sm.cache[session.ID]
+		sm.mutex.RUnlock()
+		require.True(t, exists)
+		cachedAttr, ok := cachedItem.session.attributes["complexKey"]
+		require.True(t, ok)
+		assert.Equal(t, complexValue, cachedAttr.Value)
+		assert.False(t, cachedAttr.Marshaled)
+	})
+
+	t.Run("ConcurrentUnmarshaling", func(t *testing.T) {
+		var wg sync.WaitGroup
+		concurrentAccesses := 10
+
+		for i := 0; i < concurrentAccesses; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				var unmarshaledValue complexValueType
+				_, err := session.GetAttributeAndRetainUnmarshaled("complexKey", &unmarshaledValue)
+				require.NoError(t, err)
+				assert.Equal(t, complexValue, unmarshaledValue)
+			}()
+		}
+
+		wg.Wait()
+
+		// Verify that the attribute is unmarshaled in the session
+		attr, ok := session.GetAttribute("complexKey")
+		require.True(t, ok)
+		assert.Equal(t, complexValue, attr.Value)
+		assert.False(t, attr.Marshaled)
+	})
+
+	t.Run("UnmarshalNonExistentAttribute", func(t *testing.T) {
+		var value string
+		_, err := session.GetAttributeAndRetainUnmarshaled("nonExistentKey", &value)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "attribute nonExistentKey not found")
+	})
+
+	t.Run("UnmarshalInvalidJSON", func(t *testing.T) {
+		// Update the session with an invalid JSON value
+		err := session.UpdateAttribute("invalidJSON", "{invalid_json", nil)
+		require.NoError(t, err)
+		updatedSession, err := sm.UpdateSession(context.Background(), session, false)
+		require.NoError(t, err)
+
+		var value map[string]interface{}
+		_, err = updatedSession.GetAttributeAndRetainUnmarshaled("invalidJSON", &value)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "cannot assign string")
 	})
 }
 
