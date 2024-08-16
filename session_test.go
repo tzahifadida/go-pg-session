@@ -1317,7 +1317,7 @@ func TestGetAttributeAndRetainUnmarshaled(t *testing.T) {
 		var value string
 		_, err := session.GetAttributeAndRetainUnmarshaled("nonExistentKey", &value)
 		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "attribute nonExistentKey not found")
+		assert.Equal(t, ErrAttributeNotFound, err)
 	})
 
 	t.Run("UnmarshalInvalidJSON", func(t *testing.T) {

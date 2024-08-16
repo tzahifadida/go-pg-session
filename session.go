@@ -1153,6 +1153,8 @@ func (s *Session) GetAttribute(key string) (SessionAttributeValue, bool) {
 	return attr, ok
 }
 
+var ErrAttributeNotFound = errors.New("attribute not found")
+
 // GetAttributeAndRetainUnmarshaled retrieves a specific attribute, unmarshals it if necessary,
 // and retains the unmarshaled value in memory for future use. This method is optimized to
 // prevent repeated unmarshaling of the same attribute as long as the session remains in memory.
@@ -1171,6 +1173,7 @@ func (s *Session) GetAttribute(key string) (SessionAttributeValue, bool) {
 // Returns:
 //   - A copy of the SessionAttributeValue (which may be newly unmarshaled or previously cached)
 //     and an error if any occurred during the retrieval or unmarshaling process.
+//   - If an attribute is not found it returns ErrAttributeNotFound
 //
 // Usage:
 //
@@ -1183,7 +1186,7 @@ func (s *Session) GetAttribute(key string) (SessionAttributeValue, bool) {
 func (s *Session) GetAttributeAndRetainUnmarshaled(key string, v interface{}) (SessionAttributeValue, error) {
 	attr, ok := s.attributes[key]
 	if !ok {
-		return SessionAttributeValue{}, fmt.Errorf("attribute %s not found", key)
+		return SessionAttributeValue{}, ErrAttributeNotFound
 	}
 
 	if !attr.Marshaled {
