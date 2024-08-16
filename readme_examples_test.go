@@ -2,6 +2,7 @@ package gopgsession
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -44,7 +45,7 @@ func TestReadmeExamples(t *testing.T) {
 		assert.NotNil(t, session)
 
 		// Retrieving a Session
-		retrievedSession, err := sessionManager.GetSessionWithVersionAndOptions(context.Background(), session.ID, 1, GetSessionOptions{DoNotUpdateSessionLastAccess: true})
+		retrievedSession, err := sessionManager.GetSession(context.Background(), session.ID, WithDoNotUpdateSessionLastAccess())
 		require.NoError(t, err)
 		assert.Equal(t, userID, retrievedSession.UserID)
 
@@ -56,7 +57,7 @@ func TestReadmeExamples(t *testing.T) {
 		err = retrievedSession.UpdateAttribute("preferences", preferences, nil)
 		require.NoError(t, err)
 
-		updatedSession, err := sessionManager.UpdateSession(context.Background(), retrievedSession, true)
+		updatedSession, err := sessionManager.UpdateSession(context.Background(), retrievedSession, WithCheckVersion())
 		require.NoError(t, err)
 
 		// Verify the updated attribute
@@ -69,7 +70,7 @@ func TestReadmeExamples(t *testing.T) {
 		err = sessionManager.DeleteSession(context.Background(), updatedSession.ID)
 		require.NoError(t, err)
 
-		_, err = sessionManager.GetSessionWithVersionAndOptions(context.Background(), updatedSession.ID, updatedSession.Version, GetSessionOptions{})
+		_, err = sessionManager.GetSession(context.Background(), updatedSession.ID)
 		assert.Error(t, err)
 	})
 
@@ -363,7 +364,7 @@ func updateUserPreferences(sm *SessionManager) http.HandlerFunc {
 			if attempt == 0 {
 				session, err = sm.GetSession(r.Context(), sessionID)
 			} else {
-				session, err = sm.GetSessionWithVersionAndOptions(r.Context(), sessionID, 0, GetSessionOptions{ForceRefresh: true})
+				session, err = sm.GetSession(r.Context(), sessionID, WithForceRefresh())
 			}
 
 			if err != nil {
@@ -385,8 +386,8 @@ func updateUserPreferences(sm *SessionManager) http.HandlerFunc {
 				return
 			}
 
-			_, err = sm.UpdateSession(r.Context(), session, true)
-			if err == ErrSessionVersionIsOutdated {
+			_, err = sm.UpdateSession(r.Context(), session, WithCheckVersion())
+			if errors.Is(err, ErrSessionVersionIsOutdated) {
 				continue
 			}
 			if err != nil {
@@ -427,7 +428,7 @@ func addToCartHandler(sm *SessionManager) http.HandlerFunc {
 			if attempt == 0 {
 				session, err = sm.GetSession(r.Context(), sessionID)
 			} else {
-				session, err = sm.GetSessionWithVersionAndOptions(r.Context(), sessionID, 0, GetSessionOptions{ForceRefresh: true})
+				session, err = sm.GetSession(r.Context(), sessionID, WithForceRefresh())
 			}
 
 			if err != nil {
@@ -449,8 +450,8 @@ func addToCartHandler(sm *SessionManager) http.HandlerFunc {
 				return
 			}
 
-			_, err = sm.UpdateSession(r.Context(), session, true)
-			if err == ErrSessionVersionIsOutdated {
+			_, err = sm.UpdateSession(r.Context(), session, WithCheckVersion())
+			if errors.Is(err, ErrSessionVersionIsOutdated) {
 				continue
 			}
 			if err != nil {

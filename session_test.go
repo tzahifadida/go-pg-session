@@ -57,7 +57,7 @@ func TestReadmeExamplesPrev(t *testing.T) {
 	fakeClock.Advance(time.Second)
 
 	// Example: Retrieving a Session
-	retrievedSession, err := sessionManager.GetSessionWithVersionAndOptions(context.Background(), session.ID, 1, GetSessionOptions{DoNotUpdateSessionLastAccess: true})
+	retrievedSession, err := sessionManager.GetSessionWithVersion(context.Background(), session.ID, 1, WithDoNotUpdateSessionLastAccess())
 	require.NoError(t, err)
 	log.Printf("Retrieved session for user ID: %s", retrievedSession.UserID)
 
@@ -66,7 +66,7 @@ func TestReadmeExamplesPrev(t *testing.T) {
 	err = retrievedSession.UpdateAttribute("preferences", newPreferences, nil)
 	require.NoError(t, err)
 
-	updatedSession, err := sessionManager.UpdateSession(context.Background(), retrievedSession, true)
+	updatedSession, err := sessionManager.UpdateSession(context.Background(), retrievedSession)
 	require.NoError(t, err)
 	log.Printf("Updated session attribute for session ID: %s", updatedSession.ID)
 
@@ -74,7 +74,7 @@ func TestReadmeExamplesPrev(t *testing.T) {
 	fakeClock.Advance(time.Second)
 
 	// Verify the updated attribute
-	finalSession, err := sessionManager.GetSessionWithVersionAndOptions(context.Background(), updatedSession.ID, updatedSession.Version, GetSessionOptions{})
+	finalSession, err := sessionManager.GetSessionWithVersion(context.Background(), updatedSession.ID, updatedSession.Version)
 	require.NoError(t, err)
 
 	var preferences map[string]string
@@ -92,7 +92,7 @@ func TestReadmeExamplesPrev(t *testing.T) {
 	fakeClock.Advance(time.Second)
 
 	// Verify the session was deleted
-	_, err = sessionManager.GetSessionWithVersionAndOptions(context.Background(), finalSession.ID, finalSession.Version, GetSessionOptions{})
+	_, err = sessionManager.GetSessionWithVersion(context.Background(), finalSession.ID, finalSession.Version)
 	require.Error(t, err)
 }
 
@@ -146,7 +146,7 @@ func TestSessionManager(t *testing.T) {
 		fakeClock.Advance(time.Second)
 
 		// Verify the session was created
-		retrievedSession, err := sm.GetSessionWithVersionAndOptions(context.Background(), session.ID, 1, GetSessionOptions{})
+		retrievedSession, err := sm.GetSessionWithVersion(context.Background(), session.ID, 1)
 		require.NoError(t, err)
 		assert.Equal(t, userID, retrievedSession.UserID)
 
@@ -161,8 +161,8 @@ func TestSessionManager(t *testing.T) {
 		assert.Equal(t, 1, retrievedSession.Version)
 	})
 
-	// Test GetSessionWithVersionAndOptions
-	t.Run("GetSessionWithVersionAndOptions", func(t *testing.T) {
+	// Test GetSessionWithVersion
+	t.Run("GetSessionWithVersion", func(t *testing.T) {
 		userID := uuid.New()
 		attributes := map[string]SessionAttributeValue{
 			"key": {Value: "value", Marshaled: false},
@@ -174,7 +174,7 @@ func TestSessionManager(t *testing.T) {
 		// Advance the clock
 		fakeClock.Advance(time.Second)
 
-		retrievedSession, err := sm.GetSessionWithVersionAndOptions(context.Background(), session.ID, 1, GetSessionOptions{DoNotUpdateSessionLastAccess: false})
+		retrievedSession, err := sm.GetSessionWithVersion(context.Background(), session.ID, 1, WithDoNotUpdateSessionLastAccess())
 		require.NoError(t, err)
 		assert.Equal(t, userID, retrievedSession.UserID)
 		keyValue, ok := retrievedSession.GetAttributes()["key"].Value.(string)
@@ -187,7 +187,7 @@ func TestSessionManager(t *testing.T) {
 		oldLastAccessed := retrievedSession.LastAccessed
 
 		fakeClock.Advance(time.Minute)
-		retrievedSession, err = sm.GetSessionWithVersionAndOptions(context.Background(), session.ID, 1, GetSessionOptions{DoNotUpdateSessionLastAccess: false})
+		retrievedSession, err = sm.GetSessionWithVersion(context.Background(), session.ID, 1)
 		require.NoError(t, err)
 		assert.True(t, retrievedSession.LastAccessed.After(oldLastAccessed))
 	})
@@ -205,7 +205,7 @@ func TestSessionManager(t *testing.T) {
 		// Advance the clock
 		fakeClock.Advance(time.Second)
 
-		retrievedSession, err := sm.GetSessionWithVersionAndOptions(context.Background(), session.ID, 1, GetSessionOptions{})
+		retrievedSession, err := sm.GetSessionWithVersion(context.Background(), session.ID, 1)
 		require.NoError(t, err)
 
 		err = retrievedSession.UpdateAttribute("key", "new_value", nil)
@@ -214,14 +214,14 @@ func TestSessionManager(t *testing.T) {
 		err = retrievedSession.UpdateAttribute("new_key", "another_value", nil)
 		require.NoError(t, err)
 
-		updatedSession, err := sm.UpdateSession(context.Background(), retrievedSession, true)
+		updatedSession, err := sm.UpdateSession(context.Background(), retrievedSession)
 		require.NoError(t, err)
 		assert.Equal(t, 2, updatedSession.Version)
 
 		// Advance the clock
 		fakeClock.Advance(time.Second)
 
-		finalSession, err := sm.GetSessionWithVersionAndOptions(context.Background(), session.ID, 2, GetSessionOptions{})
+		finalSession, err := sm.GetSessionWithVersion(context.Background(), session.ID, 2)
 		require.NoError(t, err)
 		keyValue, ok := finalSession.GetAttributes()["key"].Value.(string)
 		require.True(t, ok, "key value is not a string")
@@ -251,7 +251,7 @@ func TestSessionManager(t *testing.T) {
 		// Advance the clock
 		fakeClock.Advance(time.Second)
 
-		_, err = sm.GetSessionWithVersionAndOptions(context.Background(), session.ID, 1, GetSessionOptions{})
+		_, err = sm.GetSessionWithVersion(context.Background(), session.ID, 1)
 		assert.Error(t, err)
 	})
 
@@ -280,10 +280,10 @@ func TestSessionManager(t *testing.T) {
 		// Advance the clock
 		fakeClock.Advance(time.Second)
 
-		_, err = sm.GetSessionWithVersionAndOptions(context.Background(), session1.ID, 1, GetSessionOptions{})
+		_, err = sm.GetSessionWithVersion(context.Background(), session1.ID, 1)
 		assert.Error(t, err)
 
-		_, err = sm.GetSessionWithVersionAndOptions(context.Background(), session2.ID, 1, GetSessionOptions{})
+		_, err = sm.GetSessionWithVersion(context.Background(), session2.ID, 1)
 		assert.Error(t, err)
 	})
 
@@ -314,16 +314,16 @@ func TestSessionManager(t *testing.T) {
 		// Wait for the enforce method to finish
 		time.Sleep(2 * time.Second)
 
-		_, err = sm.GetSessionWithVersionAndOptions(context.Background(), session1.ID, 1, GetSessionOptions{})
+		_, err = sm.GetSessionWithVersion(context.Background(), session1.ID, 1)
 		assert.Error(t, err) // This session should have been deleted
 
-		_, err = sm.GetSessionWithVersionAndOptions(context.Background(), session2.ID, 1, GetSessionOptions{})
+		_, err = sm.GetSessionWithVersion(context.Background(), session2.ID, 1)
 		assert.NoError(t, err)
 
-		_, err = sm.GetSessionWithVersionAndOptions(context.Background(), session3.ID, 1, GetSessionOptions{})
+		_, err = sm.GetSessionWithVersion(context.Background(), session3.ID, 1)
 		assert.NoError(t, err)
 
-		_, err = sm.GetSessionWithVersionAndOptions(context.Background(), session4.ID, 1, GetSessionOptions{})
+		_, err = sm.GetSessionWithVersion(context.Background(), session4.ID, 1)
 		assert.NoError(t, err)
 	})
 
@@ -352,7 +352,7 @@ func TestSessionManager(t *testing.T) {
 		require.NoError(t, err)
 
 		// The expired session should be deleted
-		_, err = sm.GetSessionWithVersionAndOptions(context.Background(), session.ID, 1, GetSessionOptions{})
+		_, err = sm.GetSessionWithVersion(context.Background(), session.ID, 1)
 		assert.Error(t, err)
 	})
 
@@ -377,7 +377,7 @@ func TestSessionManager(t *testing.T) {
 		require.NoError(t, err)
 
 		// The session should be back in the cache
-		retrievedSession, err := sm.GetSessionWithVersionAndOptions(context.Background(), session.ID, 1, GetSessionOptions{})
+		retrievedSession, err := sm.GetSessionWithVersion(context.Background(), session.ID, 1)
 		require.NoError(t, err)
 		assert.NotNil(t, retrievedSession)
 	})
@@ -396,18 +396,18 @@ func TestSessionManager(t *testing.T) {
 		// Advance the clock
 		fakeClock.Advance(time.Second)
 
-		retrievedSession, err := sm.GetSessionWithVersionAndOptions(context.Background(), session.ID, 1, GetSessionOptions{})
+		retrievedSession, err := sm.GetSessionWithVersion(context.Background(), session.ID, 1)
 		require.NoError(t, err)
 
 		retrievedSession.DeleteAttribute("key1")
 
-		updatedSession, err := sm.UpdateSession(context.Background(), retrievedSession, true)
+		updatedSession, err := sm.UpdateSession(context.Background(), retrievedSession)
 		require.NoError(t, err)
 
 		// Advance the clock
 		fakeClock.Advance(time.Second)
 
-		finalSession, err := sm.GetSessionWithVersionAndOptions(context.Background(), updatedSession.ID, updatedSession.Version, GetSessionOptions{})
+		finalSession, err := sm.GetSessionWithVersion(context.Background(), updatedSession.ID, updatedSession.Version)
 		require.NoError(t, err)
 		_, exists := finalSession.GetAttribute("key1")
 		assert.False(t, exists)
@@ -433,11 +433,11 @@ func TestSessionManager(t *testing.T) {
 		require.NoError(t, err)
 
 		// Sessions should still exist in the database but not in the cache
-		retrievedSession1, err := sm.GetSessionWithVersionAndOptions(context.Background(), session1.ID, 1, GetSessionOptions{})
+		retrievedSession1, err := sm.GetSessionWithVersion(context.Background(), session1.ID, 1)
 		require.NoError(t, err)
 		assert.NotNil(t, retrievedSession1)
 
-		retrievedSession2, err := sm.GetSessionWithVersionAndOptions(context.Background(), session2.ID, 1, GetSessionOptions{})
+		retrievedSession2, err := sm.GetSessionWithVersion(context.Background(), session2.ID, 1)
 		require.NoError(t, err)
 		assert.NotNil(t, retrievedSession2)
 
@@ -445,11 +445,11 @@ func TestSessionManager(t *testing.T) {
 		sm.clearCache()
 
 		// Sessions should still be retrievable from the database
-		retrievedSession1, err = sm.GetSessionWithVersionAndOptions(context.Background(), session1.ID, 1, GetSessionOptions{})
+		retrievedSession1, err = sm.GetSessionWithVersion(context.Background(), session1.ID, 1)
 		require.NoError(t, err)
 		assert.NotNil(t, retrievedSession1)
 
-		retrievedSession2, err = sm.GetSessionWithVersionAndOptions(context.Background(), session2.ID, 1, GetSessionOptions{})
+		retrievedSession2, err = sm.GetSessionWithVersion(context.Background(), session2.ID, 1)
 		require.NoError(t, err)
 		assert.NotNil(t, retrievedSession2)
 	})
@@ -495,7 +495,7 @@ func TestSessionManager(t *testing.T) {
 		assert.Equal(t, 1, version)
 
 		// Verify that we can retrieve the session
-		retrievedSession, err := sm.GetSessionWithVersionAndOptions(context.Background(), decodedID, version, GetSessionOptions{})
+		retrievedSession, err := sm.GetSessionWithVersion(context.Background(), decodedID, version)
 		require.NoError(t, err)
 		assert.Equal(t, userID, retrievedSession.UserID)
 	})
@@ -525,7 +525,7 @@ func TestSessionManager(t *testing.T) {
 		sm.processLastAccessUpdates()
 		sm.cleanupExpiredSessions(ctx)
 
-		retrievedSession, err := sm.GetSessionWithVersionAndOptions(context.Background(), session.ID, session.Version, GetSessionOptions{ForceRefresh: true})
+		retrievedSession, err := sm.GetSessionWithVersion(context.Background(), session.ID, session.Version, WithForceRefresh())
 		require.NoError(t, err)
 
 		// The expiring attribute should be gone
@@ -544,11 +544,11 @@ func TestSessionManager(t *testing.T) {
 		err = retrievedSession.UpdateAttribute("new_expiring", "new_expiring_value", &futureTime)
 		require.NoError(t, err)
 
-		updatedSession, err := sm.UpdateSession(context.Background(), retrievedSession, true)
+		updatedSession, err := sm.UpdateSession(context.Background(), retrievedSession)
 		require.NoError(t, err)
 
 		// Verify the new expiring attribute
-		finalSession, err := sm.GetSessionWithVersionAndOptions(context.Background(), updatedSession.ID, updatedSession.Version, GetSessionOptions{})
+		finalSession, err := sm.GetSessionWithVersion(context.Background(), updatedSession.ID, updatedSession.Version)
 		require.NoError(t, err)
 		newExpiringAttr, exists := finalSession.GetAttribute("new_expiring")
 		assert.True(t, exists)
@@ -559,14 +559,14 @@ func TestSessionManager(t *testing.T) {
 		// Advance the clock past the new expiration time
 		fakeClock.Advance(1*time.Hour + 5*time.Minute)
 
-		_, err = sm.GetSessionWithVersionAndOptions(context.Background(), updatedSession.ID, updatedSession.Version, GetSessionOptions{})
+		_, err = sm.GetSessionWithVersion(context.Background(), updatedSession.ID, updatedSession.Version)
 		require.NoError(t, err)
 		time.Sleep(2 * time.Second)
 		sm.processLastAccessUpdates()
 		sm.cleanupExpiredSessions(ctx)
 
 		// The new expiring attribute should now be gone
-		expiredSession, err := sm.GetSessionWithVersionAndOptions(context.Background(), finalSession.ID, finalSession.Version, GetSessionOptions{})
+		expiredSession, err := sm.GetSessionWithVersion(context.Background(), finalSession.ID, finalSession.Version)
 		require.NoError(t, err)
 		_, exists = expiredSession.GetAttribute("new_expiring")
 		assert.False(t, exists)
@@ -590,7 +590,7 @@ func TestSessionManager(t *testing.T) {
 				defer func() { done <- true }()
 
 				for retry := 0; retry < 15; retry++ {
-					retrievedSession, err := sm.GetSessionWithVersionAndOptions(context.Background(), session.ID, 1, GetSessionOptions{})
+					retrievedSession, err := sm.GetSessionWithVersion(context.Background(), session.ID, 1)
 					require.NoError(t, err)
 
 					counterAttr, ok := retrievedSession.GetAttribute("counter")
@@ -605,7 +605,7 @@ func TestSessionManager(t *testing.T) {
 					err = retrievedSession.UpdateAttribute("counter", strconv.Itoa(counter+1), nil)
 					require.NoError(t, err)
 
-					_, err = sm.UpdateSession(context.Background(), retrievedSession, true)
+					_, err = sm.UpdateSession(context.Background(), retrievedSession, WithCheckVersion())
 					if err == nil {
 						break
 					}
@@ -620,7 +620,7 @@ func TestSessionManager(t *testing.T) {
 		}
 		time.Sleep(5 * time.Second)
 
-		finalSession, err := sm.GetSessionWithVersionAndOptions(context.Background(), session.ID, 1, GetSessionOptions{})
+		finalSession, err := sm.GetSessionWithVersion(context.Background(), session.ID, 1)
 		require.NoError(t, err)
 
 		finalCounterAttr, ok := finalSession.GetAttribute("counter")
@@ -672,7 +672,7 @@ func TestSessionManagerWithRealClock(t *testing.T) {
 		time.Sleep(3 * time.Second)
 
 		// The expired session should be deleted
-		_, err = sm.GetSessionWithVersionAndOptions(context.Background(), session.ID, 1, GetSessionOptions{})
+		_, err = sm.GetSessionWithVersion(context.Background(), session.ID, 1)
 		assert.Error(t, err)
 	})
 
@@ -686,13 +686,13 @@ func TestSessionManagerWithRealClock(t *testing.T) {
 		session, err := sm.CreateSession(context.Background(), userID, attributes)
 		require.NoError(t, err)
 
-		initialSession, err := sm.GetSessionWithVersionAndOptions(context.Background(), session.ID, 1, GetSessionOptions{DoNotUpdateSessionLastAccess: true})
+		initialSession, err := sm.GetSessionWithVersion(context.Background(), session.ID, 1, WithDoNotUpdateSessionLastAccess())
 		require.NoError(t, err)
 
 		// Wait for the last access time to be updated
 		time.Sleep(2 * time.Second)
 
-		updatedSession, err := sm.GetSessionWithVersionAndOptions(context.Background(), session.ID, 1, GetSessionOptions{})
+		updatedSession, err := sm.GetSessionWithVersion(context.Background(), session.ID, 1)
 		require.NoError(t, err)
 
 		assert.True(t, updatedSession.LastAccessed.After(initialSession.LastAccessed))
@@ -724,7 +724,7 @@ func TestSessionManagerEdgeCases(t *testing.T) {
 		require.NoError(t, err)
 		assert.NotEqual(t, uuid.Nil, session.ID)
 
-		retrievedSession, err := sm.GetSessionWithVersionAndOptions(context.Background(), session.ID, 1, GetSessionOptions{})
+		retrievedSession, err := sm.GetSessionWithVersion(context.Background(), session.ID, 1)
 		require.NoError(t, err)
 		assert.Empty(t, retrievedSession.GetAttributes())
 	})
@@ -738,7 +738,7 @@ func TestSessionManagerEdgeCases(t *testing.T) {
 			sm:      sm,
 		}
 
-		_, err := sm.UpdateSession(context.Background(), nonExistentSession, true)
+		_, err := sm.UpdateSession(context.Background(), nonExistentSession)
 		assert.Error(t, err)
 	})
 
@@ -750,7 +750,7 @@ func TestSessionManagerEdgeCases(t *testing.T) {
 
 	// Test getting a session with an invalid UUID
 	t.Run("GetSessionWithInvalidUUID", func(t *testing.T) {
-		_, err := sm.GetSessionWithVersionAndOptions(context.Background(), uuid.Nil, 1, GetSessionOptions{})
+		_, err := sm.GetSessionWithVersion(context.Background(), uuid.Nil, 1)
 		assert.Error(t, err)
 	})
 
@@ -823,7 +823,7 @@ func TestSessionManagerPerformance(t *testing.T) {
 		// Retrieve sessions (should be cached)
 		start = time.Now()
 		for _, sessionID := range sessionIDs {
-			_, err := sm.GetSessionWithVersionAndOptions(context.Background(), sessionID, 1, GetSessionOptions{})
+			_, err := sm.GetSessionWithVersion(context.Background(), sessionID, 1)
 			require.NoError(t, err)
 		}
 		elapsed = time.Since(start)
@@ -930,7 +930,7 @@ func TestConcurrentSessionManagers(t *testing.T) {
 				// Update the session
 				err = session.UpdateAttribute("key", fmt.Sprintf("updated_value%d", index), nil)
 				require.NoError(t, err)
-				updatedSession, err := managers[index%numManagers].UpdateSession(context.Background(), session, true)
+				updatedSession, err := managers[index%numManagers].UpdateSession(context.Background(), session)
 				require.NoError(t, err)
 
 				// Wait a bit to allow update notifications to propagate
@@ -938,7 +938,7 @@ func TestConcurrentSessionManagers(t *testing.T) {
 
 				// Check if the updated session is available in all managers
 				for j, sm := range managers {
-					retrievedSession, err := sm.GetSessionWithVersionAndOptions(context.Background(), session.ID, updatedSession.Version, GetSessionOptions{})
+					retrievedSession, err := sm.GetSessionWithVersion(context.Background(), session.ID, updatedSession.Version)
 					require.NoError(t, err, "Manager %d failed to retrieve session", j)
 					assert.Equal(t, session.ID, retrievedSession.ID)
 					assert.Equal(t, fmt.Sprintf("updated_value%d", index), retrievedSession.GetAttributes()["key"].Value)
@@ -991,7 +991,7 @@ func TestSignSessionID(t *testing.T) {
 		// Retrieve the session using the decoded session ID
 		retrievedSessionID, err := uuid.Parse(decodedSessionID)
 		require.NoError(t, err)
-		retrievedSession, err := sm.GetSessionWithVersionAndOptions(context.Background(), retrievedSessionID, 1, GetSessionOptions{})
+		retrievedSession, err := sm.GetSessionWithVersion(context.Background(), retrievedSessionID, 1)
 		require.NoError(t, err)
 		assert.Equal(t, session.ID, retrievedSession.ID)
 	})
@@ -1045,7 +1045,7 @@ func TestRefreshCache(t *testing.T) {
 		require.NoError(t, err)
 
 		// Attempt to get the session (this should now return the updated session)
-		refreshedSession, err := sm.GetSessionWithVersionAndOptions(context.Background(), session.ID, 1, GetSessionOptions{})
+		refreshedSession, err := sm.GetSessionWithVersion(context.Background(), session.ID, 1)
 		require.NoError(t, err)
 
 		// Check if the refreshed session has the updated attribute
@@ -1109,7 +1109,7 @@ func TestOutOfSyncBehavior(t *testing.T) {
 		require.NoError(t, err)
 
 		// Attempt to get the session (this should force a refresh due to outOfSync)
-		refreshedSession, err := sm.GetSessionWithVersionAndOptions(context.Background(), session.ID, 1, GetSessionOptions{})
+		refreshedSession, err := sm.GetSessionWithVersion(context.Background(), session.ID, 1)
 		require.NoError(t, err)
 
 		// Check if the refreshed session has the updated attribute
@@ -1149,14 +1149,14 @@ func TestUpdateSessionWithCheckVersion(t *testing.T) {
 		// Update the session with checkVersion = true
 		err = session.UpdateAttribute("key", "updated_value", nil)
 		require.NoError(t, err)
-		updatedSession, err := sm.UpdateSession(context.Background(), session, true)
+		updatedSession, err := sm.UpdateSession(context.Background(), session, WithCheckVersion())
 		require.NoError(t, err)
 		assert.Equal(t, 2, updatedSession.Version)
 
 		// Try to update the session again with the old version
 		err = session.UpdateAttribute("key", "another_value", nil)
 		require.NoError(t, err)
-		_, err = sm.UpdateSession(context.Background(), session, true)
+		_, err = sm.UpdateSession(context.Background(), session, WithCheckVersion())
 		assert.Equal(t, ErrSessionVersionIsOutdated, err)
 	})
 
@@ -1169,17 +1169,17 @@ func TestUpdateSessionWithCheckVersion(t *testing.T) {
 		session, err := sm.CreateSession(context.Background(), userID, attributes)
 		require.NoError(t, err)
 
-		// Update the session with checkVersion = false
+		// Update the session with checkVersion = false (default)
 		err = session.UpdateAttribute("key", "updated_value", nil)
 		require.NoError(t, err)
-		updatedSession, err := sm.UpdateSession(context.Background(), session, false)
+		updatedSession, err := sm.UpdateSession(context.Background(), session)
 		require.NoError(t, err)
 		assert.Equal(t, 2, updatedSession.Version)
 
 		// Try to update the session again with the old version
 		err = session.UpdateAttribute("key", "another_value", nil)
 		require.NoError(t, err)
-		finalSession, err := sm.UpdateSession(context.Background(), session, false)
+		finalSession, err := sm.UpdateSession(context.Background(), session)
 		require.NoError(t, err)
 		assert.Equal(t, 3, finalSession.Version)
 		assert.Equal(t, "another_value", finalSession.GetAttributes()["key"].Value)
@@ -1270,7 +1270,7 @@ func TestGetAttributeAndRetainUnmarshaled(t *testing.T) {
 		require.NoError(t, err)
 
 		// Retrieve the session from cache
-		cachedSession, err := sm.GetSessionWithVersionAndOptions(context.Background(), session.ID, session.Version, GetSessionOptions{})
+		cachedSession, err := sm.GetSessionWithVersion(context.Background(), session.ID, session.Version)
 		require.NoError(t, err)
 
 		// Unmarshal the complex attribute
@@ -1324,16 +1324,115 @@ func TestGetAttributeAndRetainUnmarshaled(t *testing.T) {
 		// Update the session with an invalid JSON value
 		err := session.UpdateAttribute("invalidJSON", "{invalid_json", nil)
 		require.NoError(t, err)
-		updatedSession, err := sm.UpdateSession(context.Background(), session, false)
+		updatedSession, err := sm.UpdateSession(context.Background(), session)
 		require.NoError(t, err)
 
 		var value map[string]interface{}
 		_, err = updatedSession.GetAttributeAndRetainUnmarshaled("invalidJSON", &value)
 		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "cannot assign string")
+		assert.Contains(t, err.Error(), "cannot assign string") // this is the string, don't change.
 	})
 }
 
+func TestSessionManagerResilience(t *testing.T) {
+	ctx := context.Background()
+
+	// Start PostgreSQL container
+	postgres, pgConnString, err := startPostgresContainer(ctx)
+	require.NoError(t, err)
+	defer postgres.Terminate(ctx)
+
+	// Create a new SessionManager
+	cfg := DefaultConfig()
+	cfg.CreateSchemaIfMissing = true
+	cfg.CacheSize = 100
+	cfg.NotifyOnUpdates = true
+
+	sm, err := NewSessionManager(cfg, pgConnString)
+	require.NoError(t, err)
+	defer sm.Shutdown(context.Background())
+
+	// Create a test session
+	userID := uuid.New()
+	attributes := map[string]SessionAttributeValue{
+		"key": {Value: "initial_value"},
+	}
+	session, err := sm.CreateSession(context.Background(), userID, attributes)
+	require.NoError(t, err)
+
+	// Simulate PostgreSQL dropping all connections
+	t.Run("HandleConnectionDrop", func(t *testing.T) {
+		// Create a new connection to execute the termination command
+		db, err := sqlx.Connect("pgx", pgConnString)
+		require.NoError(t, err)
+		defer db.Close()
+
+		// Force disconnect all clients except our current connection
+		_, err = db.Exec("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE pid <> pg_backend_pid()")
+		require.NoError(t, err)
+
+		// Close our connection too
+		db.Close()
+
+		// Wait a bit for the SessionManager to detect the disconnection and re-establish the connection
+		time.Sleep(5 * time.Second)
+
+		// Try to get the session (this should trigger a refresh)
+		retrievedSession, err := sm.GetSessionWithVersion(context.Background(), session.ID, session.Version, WithForceRefresh())
+		require.NoError(t, err)
+		assert.Equal(t, session.ID, retrievedSession.ID)
+		assert.Equal(t, "initial_value", retrievedSession.GetAttributes()["key"].Value)
+	})
+
+	// Test out-of-sync scenario
+	t.Run("HandleOutOfSync", func(t *testing.T) {
+		// Update the session directly in the database
+		_, err = sm.db.ExecContext(ctx, fmt.Sprintf(`
+			UPDATE %s
+			SET "updated_at" = NOW(), "version" = "version" + 1
+			WHERE "id" = $1
+		`, sm.getTableName("sessions")), session.ID)
+		require.NoError(t, err)
+
+		// Update an attribute directly in the database
+		_, err = sm.db.ExecContext(ctx, fmt.Sprintf(`
+			UPDATE %s
+			SET "value" = 'updated_value'
+			WHERE "session_id" = $1 AND "key" = 'key'
+		`, sm.getTableName("session_attributes")), session.ID)
+		require.NoError(t, err)
+
+		// Create a new connection to execute the termination command
+		db, err := sqlx.Connect("pgx", pgConnString)
+		require.NoError(t, err)
+		defer db.Close()
+
+		// Force disconnect all clients except our current connection
+		_, err = db.Exec("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE pid <> pg_backend_pid()")
+		require.NoError(t, err)
+
+		// Close our connection too
+		db.Close()
+
+		// Wait a bit for the SessionManager to detect the disconnection and re-establish the connection
+		time.Sleep(5 * time.Second)
+
+		// Try to get the session (this should trigger a refresh due to outOfSync)
+		retrievedSession, err := sm.GetSessionWithVersion(context.Background(), session.ID, session.Version)
+		require.NoError(t, err)
+
+		// Check if the retrieved session has the updated attribute
+		attr, exists := retrievedSession.GetAttribute("key")
+		assert.True(t, exists)
+		assert.Equal(t, "updated_value", attr.Value)
+		assert.Equal(t, session.Version+1, retrievedSession.Version)
+
+		// Verify that outOfSync is set back to false
+		sm.mutex.RLock()
+		assert.False(t, sm.outOfSync)
+		sm.mutex.RUnlock()
+	})
+}
 func startPostgresContainer(ctx context.Context) (testcontainers.Container, string, error) {
 	req := testcontainers.ContainerRequest{
 		Image:        "postgres:13",
@@ -1421,103 +1520,4 @@ func retry(ctx context.Context, maxWait time.Duration, fn func() error) error {
 		}
 	}
 
-}
-func TestSessionManagerResilience(t *testing.T) {
-	ctx := context.Background()
-
-	// Start PostgreSQL container
-	postgres, pgConnString, err := startPostgresContainer(ctx)
-	require.NoError(t, err)
-	defer postgres.Terminate(ctx)
-
-	// Create a new SessionManager
-	cfg := DefaultConfig()
-	cfg.CreateSchemaIfMissing = true
-	cfg.CacheSize = 100
-	cfg.NotifyOnUpdates = true
-
-	sm, err := NewSessionManager(cfg, pgConnString)
-	require.NoError(t, err)
-	defer sm.Shutdown(context.Background())
-
-	// Create a test session
-	userID := uuid.New()
-	attributes := map[string]SessionAttributeValue{
-		"key": {Value: "initial_value"},
-	}
-	session, err := sm.CreateSession(context.Background(), userID, attributes)
-	require.NoError(t, err)
-
-	// Simulate PostgreSQL dropping all connections
-	t.Run("HandleConnectionDrop", func(t *testing.T) {
-		// Create a new connection to execute the termination command
-		db, err := sqlx.Connect("pgx", pgConnString)
-		require.NoError(t, err)
-		defer db.Close()
-
-		// Force disconnect all clients except our current connection
-		_, err = db.Exec("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE pid <> pg_backend_pid()")
-		require.NoError(t, err)
-
-		// Close our connection too
-		db.Close()
-
-		// Wait a bit for the SessionManager to detect the disconnection and re-establish the connection
-		time.Sleep(5 * time.Second)
-
-		// Try to get the session (this should trigger a refresh)
-		retrievedSession, err := sm.GetSessionWithVersionAndOptions(context.Background(), session.ID, session.Version, GetSessionOptions{ForceRefresh: true})
-		require.NoError(t, err)
-		assert.Equal(t, session.ID, retrievedSession.ID)
-		assert.Equal(t, "initial_value", retrievedSession.GetAttributes()["key"].Value)
-	})
-
-	// Test out-of-sync scenario
-	t.Run("HandleOutOfSync", func(t *testing.T) {
-		// Update the session directly in the database
-		_, err = sm.db.ExecContext(ctx, fmt.Sprintf(`
-			UPDATE %s
-			SET "updated_at" = NOW(), "version" = "version" + 1
-			WHERE "id" = $1
-		`, sm.getTableName("sessions")), session.ID)
-		require.NoError(t, err)
-
-		// Update an attribute directly in the database
-		_, err = sm.db.ExecContext(ctx, fmt.Sprintf(`
-			UPDATE %s
-			SET "value" = 'updated_value'
-			WHERE "session_id" = $1 AND "key" = 'key'
-		`, sm.getTableName("session_attributes")), session.ID)
-		require.NoError(t, err)
-
-		// Create a new connection to execute the termination command
-		db, err := sqlx.Connect("pgx", pgConnString)
-		require.NoError(t, err)
-		defer db.Close()
-
-		// Force disconnect all clients except our current connection
-		_, err = db.Exec("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE pid <> pg_backend_pid()")
-		require.NoError(t, err)
-
-		// Close our connection too
-		db.Close()
-
-		// Wait a bit for the SessionManager to detect the disconnection and re-establish the connection
-		time.Sleep(5 * time.Second)
-
-		// Try to get the session (this should trigger a refresh due to outOfSync)
-		retrievedSession, err := sm.GetSessionWithVersionAndOptions(context.Background(), session.ID, session.Version, GetSessionOptions{})
-		require.NoError(t, err)
-
-		// Check if the retrieved session has the updated attribute
-		attr, exists := retrievedSession.GetAttribute("key")
-		assert.True(t, exists)
-		assert.Equal(t, "updated_value", attr.Value)
-		assert.Equal(t, session.Version+1, retrievedSession.Version)
-
-		// Verify that outOfSync is set back to false
-		sm.mutex.RLock()
-		assert.False(t, sm.outOfSync)
-		sm.mutex.RUnlock()
-	})
 }

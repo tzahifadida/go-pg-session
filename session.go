@@ -138,6 +138,13 @@ type Session struct {
 	changed    map[string]bool
 	deleted    map[string]bool
 	sm         *SessionManager
+	fromCache  bool
+}
+
+// IsFromCache returns true if the session was loaded from the cache,
+// and false if it was loaded from the database table.
+func (s *Session) IsFromCache() bool {
+	return s.fromCache
 }
 
 type cacheItem struct {
@@ -447,60 +454,58 @@ func (sm *SessionManager) CreateSession(ctx context.Context, userID uuid.UUID, a
 	return session, nil
 }
 
-// GetSession retrieves a session by its ID.
+// SessionOption is a function type that modifies GetSessionOptions
+type SessionOption func(*GetSessionOptions)
+
+// WithDoNotUpdateSessionLastAccess sets the DoNotUpdateSessionLastAccess option
+func WithDoNotUpdateSessionLastAccess() SessionOption {
+	return func(opts *GetSessionOptions) {
+		opts.DoNotUpdateSessionLastAccess = true
+	}
+}
+
+// WithForceRefresh sets the ForceRefresh option
+func WithForceRefresh() SessionOption {
+	return func(opts *GetSessionOptions) {
+		opts.ForceRefresh = true
+	}
+}
+
+// GetSession retrieves a session by its ID with optional parameters.
 //
 // Parameters:
 //   - ctx: The context for the operation.
 //   - sessionID: The UUID of the session to retrieve.
+//   - options: Variadic SessionOption parameters to customize the retrieval behavior.
 //
 // Returns:
 //   - A pointer to the retrieved Session and an error if any occurred during retrieval.
-func (sm *SessionManager) GetSession(ctx context.Context, sessionID uuid.UUID) (*Session, error) {
-	return sm.GetSessionWithVersionAndOptions(ctx, sessionID, 0, GetSessionOptions{})
+func (sm *SessionManager) GetSession(ctx context.Context, sessionID uuid.UUID, options ...SessionOption) (*Session, error) {
+	return sm.GetSessionWithVersion(ctx, sessionID, 0, options...)
 }
 
-// GetSessionWithOptions retrieves a session by its ID with the specified options.
-//
-// Parameters:
-//   - ctx: The context for the operation.
-//   - sessionID: The UUID of the session to retrieve.
-//   - opts: The GetSessionOptions to use for retrieval.
-//
-// Returns:
-//   - A pointer to the retrieved Session and an error if any occurred during retrieval.
-func (sm *SessionManager) GetSessionWithOptions(ctx context.Context, sessionID uuid.UUID, opts GetSessionOptions) (*Session, error) {
-	return sm.GetSessionWithVersionAndOptions(ctx, sessionID, 0, opts)
-}
-
-// GetSessionWithVersion retrieves a session by its ID and version.
+// GetSessionWithVersion retrieves a session by its ID and version with optional parameters.
 //
 // Parameters:
 //   - ctx: The context for the operation.
 //   - sessionID: The UUID of the session to retrieve.
 //   - version: The version of the session to retrieve.
+//   - options: Variadic SessionOption parameters to customize the retrieval behavior.
 //
 // Returns:
 //   - A pointer to the retrieved Session and an error if any occurred during retrieval.
-func (sm *SessionManager) GetSessionWithVersion(ctx context.Context, sessionID uuid.UUID, version int) (*Session, error) {
-	return sm.GetSessionWithVersionAndOptions(ctx, sessionID, version, GetSessionOptions{})
-}
+func (sm *SessionManager) GetSessionWithVersion(ctx context.Context, sessionID uuid.UUID, version int, options ...SessionOption) (*Session, error) {
+	opts := GetSessionOptions{}
+	for _, option := range options {
+		option(&opts)
+	}
 
-// GetSessionWithVersionAndOptions retrieves a session by its ID and version with the specified options.
-//
-// Parameters:
-//   - ctx: The context for the operation.
-//   - sessionID: The UUID of the session to retrieve.
-//   - version: The version of the session to retrieve.
-//   - opts: The GetSessionOptions to use for retrieval.
-//
-// Returns:
-//   - A pointer to the retrieved Session and an error if any occurred during retrieval.
-func (sm *SessionManager) GetSessionWithVersionAndOptions(ctx context.Context, sessionID uuid.UUID, version int, opts GetSessionOptions) (*Session, error) {
 	if !opts.ForceRefresh {
 		sm.mutex.RLock()
 		item, exists := sm.cache[sessionID]
 		if !sm.outOfSync && exists && item.session.Version >= version {
 			sessionCopy := item.session.deepCopy()
+			sessionCopy.fromCache = true
 			sm.mutex.RUnlock()
 			if !opts.DoNotUpdateSessionLastAccess {
 				sm.mutex.Lock()
@@ -550,6 +555,7 @@ func (sm *SessionManager) GetSessionWithVersionAndOptions(ctx context.Context, s
 		session.LastAccessed = now
 	}
 
+	session.fromCache = false
 	sm.addOrUpdateCache(session)
 
 	if !opts.DoNotUpdateSessionLastAccess {
@@ -561,16 +567,44 @@ func (sm *SessionManager) GetSessionWithVersionAndOptions(ctx context.Context, s
 
 var ErrSessionVersionIsOutdated = errors.New("session version is outdated")
 
+// UpdateSessionOption is a function type that modifies UpdateSessionOptions
+type UpdateSessionOption func(*UpdateSessionOptions)
+
+// UpdateSessionOptions holds the options for updating a session
+type UpdateSessionOptions struct {
+	CheckVersion bool
+	DoNotNotify  bool
+}
+
+// WithCheckVersion sets the CheckVersion option to true
+func WithCheckVersion() UpdateSessionOption {
+	return func(opts *UpdateSessionOptions) {
+		opts.CheckVersion = true
+	}
+}
+
+// WithDoNotNotify sets the DoNotNotify option
+func WithDoNotNotify() UpdateSessionOption {
+	return func(opts *UpdateSessionOptions) {
+		opts.DoNotNotify = true
+	}
+}
+
 // UpdateSession updates the session in the database with any changes made to its attributes.
 //
 // Parameters:
 //   - ctx: The context for the operation.
 //   - session: A pointer to the Session to be updated.
-//   - checkVersion: A boolean indicating whether to perform optimistic locking using the session version.
+//   - options: Variadic UpdateSessionOption parameters to customize the update behavior.
 //
 // Returns:
 //   - A pointer to the updated Session and an error if any occurred during the update.
-func (sm *SessionManager) UpdateSession(ctx context.Context, session *Session, checkVersion bool) (*Session, error) {
+func (sm *SessionManager) UpdateSession(ctx context.Context, session *Session, options ...UpdateSessionOption) (*Session, error) {
+	opts := UpdateSessionOptions{}
+	for _, option := range options {
+		option(&opts)
+	}
+
 	tx, err := sm.db.BeginTxx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to begin transaction: %v", err)
@@ -636,7 +670,7 @@ func (sm *SessionManager) UpdateSession(ctx context.Context, session *Session, c
     `
 	var updateQuery string
 	var updateQueryRow *sql.Row
-	if checkVersion {
+	if opts.CheckVersion {
 		updateQuery = fmt.Sprintf(updateQueryTemplate, sm.getTableName("sessions"), ` AND "version" = $3`)
 		updateQueryRow = tx.QueryRowContext(ctx, updateQuery, now, session.ID, session.Version)
 	} else {
@@ -664,9 +698,11 @@ func (sm *SessionManager) UpdateSession(ctx context.Context, session *Session, c
 			sm.mutex.Unlock()
 
 			// Send notification to remove the session from other caches
-			err = sm.sendNotification(sm.db, NotificationTypeSessionsRemovalFromCache, []string{session.ID.String()})
-			if err != nil {
-				return nil, fmt.Errorf("failed to send notification: %v", err)
+			if !opts.DoNotNotify {
+				err = sm.sendNotification(sm.db, NotificationTypeSessionsRemovalFromCache, []string{session.ID.String()})
+				if err != nil {
+					return nil, fmt.Errorf("failed to send notification: %v", err)
+				}
 			}
 
 			return nil, ErrSessionVersionIsOutdated
@@ -674,7 +710,7 @@ func (sm *SessionManager) UpdateSession(ctx context.Context, session *Session, c
 		return nil, fmt.Errorf("failed to update session: %v", err)
 	}
 
-	if sm.Config.NotifyOnUpdates {
+	if sm.Config.NotifyOnUpdates && !opts.DoNotNotify {
 		err = sm.sendNotificationTx(tx, NotificationTypeSessionsRemovalFromCache, []string{session.ID.String()})
 		if err != nil {
 			return nil, fmt.Errorf("failed to send notification after update: %v", err)
@@ -1241,6 +1277,7 @@ func (s *Session) deepCopy() *Session {
 		changed:      copiedChanged,
 		deleted:      copiedDeleted,
 		sm:           s.sm,
+		fromCache:    s.fromCache,
 	}
 }
 

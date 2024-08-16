@@ -57,7 +57,7 @@ func BenchmarkConcurrentGetSession(b *testing.B) {
 			go func() {
 				defer wg.Done()
 				sessionID := sessionIDs[rand.Intn(numSessions)]
-				_, err := sm.GetSessionWithVersionAndOptions(context.Background(), sessionID, 1, GetSessionOptions{})
+				_, err := sm.GetSession(context.Background(), sessionID)
 				if err != nil {
 					b.Error(err)
 				}
@@ -124,7 +124,7 @@ func BenchmarkConcurrentUpdateSession(b *testing.B) {
 			go func(i int) {
 				defer wg.Done()
 				sessionID := sessionIDs[rand.Intn(numSessions)]
-				session, err := sm.GetSessionWithVersionAndOptions(context.Background(), sessionID, 1, GetSessionOptions{})
+				session, err := sm.GetSession(context.Background(), sessionID)
 				if err != nil {
 					b.Error(err)
 					return
@@ -136,7 +136,7 @@ func BenchmarkConcurrentUpdateSession(b *testing.B) {
 					return
 				}
 
-				_, err = sm.UpdateSession(context.Background(), session, false)
+				_, err = sm.UpdateSession(context.Background(), session)
 				if err != nil {
 					b.Error(err)
 					return
@@ -295,7 +295,7 @@ func benchmarkGetSession(b *testing.B, sm *SessionManager, sessionIDs []uuid.UUI
 		go func() {
 			defer wg.Done()
 			sessionID := sessionIDs[rand.Intn(len(sessionIDs))]
-			_, err := sm.GetSessionWithVersionAndOptions(context.Background(), sessionID, 1, GetSessionOptions{})
+			_, err := sm.GetSession(context.Background(), sessionID)
 			if err != nil {
 				b.Error(err)
 			}
@@ -361,7 +361,7 @@ func benchmarkUpdateSession(b *testing.B, sm *SessionManager, sessionIDs []uuid.
 		go func(i int) {
 			defer wg.Done()
 			sessionID := sessionIDs[rand.Intn(len(sessionIDs))]
-			session, err := sm.GetSessionWithVersionAndOptions(context.Background(), sessionID, 1, GetSessionOptions{})
+			session, err := sm.GetSession(context.Background(), sessionID)
 			if err != nil {
 				b.Error(err)
 				return
@@ -373,7 +373,7 @@ func benchmarkUpdateSession(b *testing.B, sm *SessionManager, sessionIDs []uuid.
 				return
 			}
 
-			_, err = sm.UpdateSession(context.Background(), session, false)
+			_, err = sm.UpdateSession(context.Background(), session)
 			if err != nil {
 				b.Error(err)
 				return

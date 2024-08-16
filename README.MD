@@ -174,7 +174,7 @@ Initialize a `SessionManager` with the configuration and a PostgreSQL connection
 pgxConnectionString := "postgres://username:password@localhost/dbname?sslmode=disable"
 sessionManager, err := gopgsession.NewSessionManager(cfg, pgxConnectionString)
 if err != nil {
-    log.Fatalf("Failed to initialize session manager: %v", err)
+log.Fatalf("Failed to initialize session manager: %v", err)
 }
 ```
 
@@ -186,13 +186,13 @@ Create a session for a user with initial attributes.
 ctx := context.Background()
 userID := uuid.New()
 attributes := map[string]gopgsession.SessionAttributeValue{
-    "role":        {Value: "admin"},
-    "preferences": {Value: map[string]string{"theme": "dark"}},
+"role":        {Value: "admin"},
+"preferences": {Value: map[string]string{"theme": "dark"}},
 }
 
 session, err := sessionManager.CreateSession(ctx, userID, attributes)
 if err != nil {
-    log.Fatalf("Failed to create session: %v", err)
+log.Fatalf("Failed to create session: %v", err)
 }
 
 log.Printf("Created session with ID: %s", session.ID)
@@ -200,10 +200,16 @@ log.Printf("Created session with ID: %s", session.ID)
 
 ### Retrieving a Session
 
-Retrieve a session by its ID. You can use either `GetSession` for simple retrieval or `GetSessionWithVersionAndOptions` for more control.
+Retrieve a session by its ID. You can use `GetSession` with optional parameters for more control.
 
 ```go
-session, err := sessionManager.GetSessionWithVersionAndOptions(ctx, sessionID, 0, gopgsession.GetSessionOptions{})
+session, err := sessionManager.GetSession(ctx, sessionID)
+if err != nil {
+    log.Fatalf("Failed to retrieve session: %v", err)
+}
+
+// With options
+session, err := sessionManager.GetSession(ctx, sessionID, gopgsession.WithDoNotUpdateSessionLastAccess(), gopgsession.WithForceRefresh())
 if err != nil {
     log.Fatalf("Failed to retrieve session: %v", err)
 }
@@ -239,7 +245,7 @@ if err != nil {
     log.Fatalf("Failed to update session attribute: %v", err)
 }
 
-updatedSession, err := sessionManager.UpdateSession(ctx, session, true)
+updatedSession, err := sessionManager.UpdateSession(ctx, session, gopgsession.WithCheckVersion())
 if err != nil {
     log.Fatalf("Failed to update session: %v", err)
 }
@@ -339,7 +345,7 @@ func logoutHandler(sm *gopgsession.SessionManager) http.HandlerFunc {
 
 ### Example with Optimistic Locking and Business Logic
 
-This example demonstrates how to use optimistic locking with `checkVersion=true`, including a place for user business logic and proper handling of version conflicts:
+This example demonstrates how to use optimistic locking with `WithCheckVersion()`, including a place for user business logic and proper handling of version conflicts:
 
 ```go
 func updateUserPreferences(sm *gopgsession.SessionManager) http.HandlerFunc {
@@ -357,7 +363,7 @@ if attempt == 0 {
 session, err = sm.GetSession(r.Context(), sessionID)
 } else {
 // On retry, force refresh to get the latest version
-session, err = sm.GetSessionWithVersionAndOptions(r.Context(), sessionID, 0, gopgsession.GetSessionOptions{ForceRefresh: true})
+                session, err = sm.GetSession(r.Context(), sessionID, gopgsession.WithForceRefresh())
 }
 
 if err != nil {
@@ -385,7 +391,7 @@ return
 }
 
 // Try to update with version check
-_, err = sm.UpdateSession(r.Context(), session, true)
+            _, err = sm.UpdateSession(r.Context(), session, gopgsession.WithCheckVersion())
 if err == gopgsession.ErrSessionVersionIsOutdated {
 // Version conflict, retry
 continue
@@ -424,7 +430,7 @@ var err error
 if attempt == 0 {
 session, err = sm.GetSession(r.Context(), sessionID)
 } else {
-session, err = sm.GetSessionWithVersionAndOptions(r.Context(), sessionID, 0, gopgsession.GetSessionOptions{ForceRefresh: true})
+                session, err = sm.GetSession(r.Context(), sessionID, gopgsession.WithForceRefresh())
 }
 
 if err != nil {
@@ -447,7 +453,7 @@ http.Error(w, "Failed to update cart", http.StatusInternalServerError)
 return
 }
 
-_, err = sm.UpdateSession(r.Context(), session, true)
+            _, err = sm.UpdateSession(r.Context(), session, gopgsession.WithCheckVersion())
 if err == gopgsession.ErrSessionVersionIsOutdated {
 continue // Retry
 }
@@ -582,26 +588,18 @@ func (sm *SessionManager) CreateSession(ctx context.Context, userID uuid.UUID, a
 
 ### `GetSession`
 
-Retrieves a session by its ID.
+Retrieves a session by its ID with optional parameters.
 
 ```go
-func (sm *SessionManager) GetSession(ctx context.Context, sessionID uuid.UUID) (*Session, error)
-```
-
-### `GetSessionWithVersionAndOptions`
-
-Retrieves a session by its ID and version, with additional options.
-
-```go
-func (sm *SessionManager) GetSessionWithVersionAndOptions(ctx context.Context, sessionID uuid.UUID, version int, opts GetSessionOptions) (*Session, error)
+func (sm *SessionManager) GetSession(ctx context.Context, sessionID uuid.UUID, options ...SessionOption) (*Session, error)
 ```
 
 ### `UpdateSession`
 
-Updates the session in the database with any changed attributes. Supports optimistic locking.
+Updates the session in the database with any changed attributes. Supports optimistic locking and other options.
 
 ```go
-func (sm *SessionManager) UpdateSession(ctx context.Context, session *Session, checkVersion bool) (*Session, error)
+func (sm *SessionManager) UpdateSession(ctx context.Context, session *Session, options ...UpdateSessionOption) (*Session, error)
 ```
 
 ### `DeleteSession`
