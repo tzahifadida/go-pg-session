@@ -116,12 +116,14 @@ type SessionAttributeRecord struct {
 	Key       string     `db:"key"`
 	Value     string     `db:"value"`
 	ExpiresAt *time.Time `db:"expires_at"`
+	Version   int        `db:"version"`
 }
 
 type SessionAttributeValue struct {
 	Value     any
 	Marshaled bool
 	ExpiresAt *time.Time
+	Version   int
 }
 
 type Session struct {
@@ -134,11 +136,12 @@ type Session struct {
 	UpdatedAt    time.Time `db:"updated_at"`
 	Version      int       `db:"version"`
 
-	attributes map[string]SessionAttributeValue
-	changed    map[string]bool
-	deleted    map[string]bool
-	sm         *SessionManager
-	fromCache  bool
+	attributes        map[string]SessionAttributeValue
+	attributeVersions map[string]int
+	changed           map[string]bool
+	deleted           map[string]bool
+	sm                *SessionManager
+	fromCache         bool
 }
 
 // IsFromCache returns true if the session was loaded from the cache,
@@ -344,6 +347,7 @@ func (sm *SessionManager) createSchemaAndTables() error {
 				"key" TEXT NOT NULL,
 				"value" TEXT NOT NULL,
 				"expires_at" TIMESTAMP WITH TIME ZONE,
+				"version" INTEGER NOT NULL DEFAULT 1,
 				PRIMARY KEY ("session_id", "key")
 			);`, sm.getTableName("session_attributes"), sm.getTableName("sessions")),
 		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS "%ssessions_user_id_idx" ON %s ("user_id");`,
@@ -415,6 +419,7 @@ func (sm *SessionManager) CreateSession(ctx context.Context, userID uuid.UUID, a
 		return nil, fmt.Errorf("failed to insert session: %v", err)
 	}
 
+	session.attributeVersions = make(map[string]int)
 	for key, attr := range attributes {
 		var marshaledValue string
 		if attr.Marshaled {
@@ -430,16 +435,18 @@ func (sm *SessionManager) CreateSession(ctx context.Context, userID uuid.UUID, a
 			Key:       key,
 			Value:     marshaledValue,
 			ExpiresAt: attr.ExpiresAt,
+			Version:   1, // Initial version for new attributes
 		}
 		query := fmt.Sprintf(`
-			INSERT INTO %s ("session_id", "key", "value", "expires_at")
-			VALUES (:session_id, :key, :value, :expires_at)
+			INSERT INTO %s ("session_id", "key", "value", "expires_at", "version")
+			VALUES (:session_id, :key, :value, :expires_at, :version)
 		`, sm.getTableName("session_attributes"))
 
 		_, err = tx.NamedExecContext(ctx, query, attributeRecord)
 		if err != nil {
 			return nil, fmt.Errorf("failed to insert session attribute: %v", err)
 		}
+		session.attributeVersions[key] = 1
 	}
 
 	sm.addOrUpdateCache(session)
@@ -572,14 +579,22 @@ type UpdateSessionOption func(*UpdateSessionOptions)
 
 // UpdateSessionOptions holds the options for updating a session
 type UpdateSessionOptions struct {
-	CheckVersion bool
-	DoNotNotify  bool
+	CheckVersion          bool
+	CheckAttributeVersion bool
+	DoNotNotify           bool
 }
 
 // WithCheckVersion sets the CheckVersion option to true
 func WithCheckVersion() UpdateSessionOption {
 	return func(opts *UpdateSessionOptions) {
 		opts.CheckVersion = true
+	}
+}
+
+// WithCheckAttributeVersion sets the CheckAttributeVersion option
+func WithCheckAttributeVersion() UpdateSessionOption {
+	return func(opts *UpdateSessionOptions) {
+		opts.CheckAttributeVersion = true
 	}
 }
 
@@ -611,17 +626,10 @@ func (sm *SessionManager) UpdateSession(ctx context.Context, session *Session, o
 	}
 	defer tx.Rollback()
 
-	// Handle updated attributes
+	// Handle updated and new attributes
 	for key, changed := range session.changed {
 		if changed {
 			attr := session.attributes[key]
-			query := fmt.Sprintf(`
-                INSERT INTO %s ("session_id", "key", "value", "expires_at")
-                VALUES ($1, $2, $3, $4)
-                ON CONFLICT ("session_id", "key") DO UPDATE
-                SET "value" = EXCLUDED."value", "expires_at" = EXCLUDED."expires_at"
-            `, sm.getTableName("session_attributes"))
-
 			var marshaledValue string
 			if attr.Marshaled {
 				marshaledValue = attr.Value.(string)
@@ -631,10 +639,54 @@ func (sm *SessionManager) UpdateSession(ctx context.Context, session *Session, o
 					return nil, fmt.Errorf("failed to marshal attribute value on update session: %w", err)
 				}
 			}
-			_, err = tx.ExecContext(ctx, query, session.ID, key, marshaledValue, attr.ExpiresAt)
+
+			var query string
+			var args []interface{}
+
+			if opts.CheckAttributeVersion {
+				if session.attributeVersions[key] < 0 {
+					// Insert new attribute
+					query = fmt.Sprintf(`
+						INSERT INTO %s ("session_id", "key", "value", "expires_at", "version")
+						VALUES ($1, $2, $3, $4, 1)
+						RETURNING "version"
+					`, sm.getTableName("session_attributes"))
+					args = []interface{}{session.ID, key, marshaledValue, attr.ExpiresAt}
+				} else {
+					// Update existing attribute
+					query = fmt.Sprintf(`
+						UPDATE %s
+						SET "value" = $1, "expires_at" = $2, "version" = "version" + 1
+						WHERE "session_id" = $3 AND "key" = $4 AND "version" = $5
+						RETURNING "version"
+					`, sm.getTableName("session_attributes"))
+					args = []interface{}{marshaledValue, attr.ExpiresAt, session.ID, key, session.attributeVersions[key]}
+				}
+			} else {
+				// Original upsert logic
+				query = fmt.Sprintf(`
+					INSERT INTO %s ("session_id", "key", "value", "expires_at", "version")
+					VALUES ($1, $2, $3, $4, 1)
+					ON CONFLICT ("session_id", "key") DO UPDATE
+					SET "value" = EXCLUDED.value, 
+						"expires_at" = EXCLUDED.expires_at, 
+						"version" = %s.version + 1
+					RETURNING "version"
+				`, sm.getTableName("session_attributes"), sm.getTableName("session_attributes"))
+				args = []interface{}{session.ID, key, marshaledValue, attr.ExpiresAt}
+			}
+
+			var newVersion int
+			err = tx.QueryRowContext(ctx, query, args...).Scan(&newVersion)
+
 			if err != nil {
+				if err == sql.ErrNoRows && opts.CheckAttributeVersion {
+					return nil, fmt.Errorf("attribute %s version mismatch or not found", key)
+				}
 				return nil, fmt.Errorf("failed to update session attribute: %v", err)
 			}
+
+			session.attributeVersions[key] = newVersion
 		}
 	}
 
@@ -658,6 +710,10 @@ func (sm *SessionManager) UpdateSession(ctx context.Context, session *Session, o
 		_, err = tx.ExecContext(ctx, query, args...)
 		if err != nil {
 			return nil, fmt.Errorf("failed to delete session attributes: %v", err)
+		}
+
+		for key := range session.deleted {
+			delete(session.attributeVersions, key)
 		}
 	}
 
@@ -697,8 +753,9 @@ func (sm *SessionManager) UpdateSession(ctx context.Context, session *Session, o
 			}
 			sm.mutex.Unlock()
 
+			// TX is going to fail so we have to use DB instead.
 			// Send notification to remove the session from other caches
-			if !opts.DoNotNotify {
+			if sm.Config.NotifyOnUpdates && !opts.DoNotNotify {
 				err = sm.sendNotification(sm.db, NotificationTypeSessionsRemovalFromCache, []string{session.ID.String()})
 				if err != nil {
 					return nil, fmt.Errorf("failed to send notification: %v", err)
@@ -720,6 +777,7 @@ func (sm *SessionManager) UpdateSession(ctx context.Context, session *Session, o
 	updatedSession.attributes = session.attributes
 	updatedSession.changed = make(map[string]bool)
 	updatedSession.deleted = make(map[string]bool)
+	updatedSession.attributeVersions = session.attributeVersions
 	updatedSession.sm = sm
 
 	err = tx.Commit()
@@ -903,7 +961,7 @@ func (sm *SessionManager) DeleteAllUserSessions(ctx context.Context, userID uuid
 
 func (sm *SessionManager) listAttributes(ctx context.Context, sessionID uuid.UUID) (map[string]SessionAttributeValue, error) {
 	query := fmt.Sprintf(`
-        SELECT "key", "value", "expires_at"
+		SELECT "key", "value", "expires_at", "version"
         FROM %s
         WHERE "session_id" = $1
     `, sm.getTableName("session_attributes"))
@@ -915,14 +973,17 @@ func (sm *SessionManager) listAttributes(ctx context.Context, sessionID uuid.UUI
 	defer rows.Close()
 
 	attributes := make(map[string]SessionAttributeValue)
+	attributeVersions := make(map[string]int)
 	for rows.Next() {
 		var key, value string
 		var expiresAt *time.Time
-		err := rows.Scan(&key, &value, &expiresAt)
+		var version int
+		err := rows.Scan(&key, &value, &expiresAt, &version)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan attribute row: %v", err)
 		}
 		attributes[key] = SessionAttributeValue{Value: value, ExpiresAt: expiresAt, Marshaled: true}
+		attributeVersions[key] = version
 	}
 
 	return attributes, nil
@@ -1118,7 +1179,10 @@ func (s *Session) UpdateAttribute(key string, value interface{}, expiresAt *time
 	if len(valueStr) > s.sm.Config.MaxAttributeLength {
 		return fmt.Errorf("attribute value for key %s exceeds max length of %d", key, s.sm.Config.MaxAttributeLength)
 	}
-	// we don't store it as
+
+	if _, ok := s.attributes[key]; !ok {
+		s.attributeVersions[key] = -1 // insert attribute and createsession starts at 1 so to avoid collisions, new attributes should be -1 to fail on update.
+	}
 	s.attributes[key] = SessionAttributeValue{Value: value, ExpiresAt: expiresAt, Marshaled: false}
 	s.changed[key] = true
 	return nil
@@ -1269,18 +1333,24 @@ func (s *Session) deepCopy() *Session {
 		copiedDeleted[k] = v
 	}
 
+	copiedAttributeVersions := make(map[string]int, len(s.attributeVersions))
+	for k, v := range s.attributeVersions {
+		copiedAttributeVersions[k] = v
+	}
+
 	return &Session{
-		ID:           s.ID,
-		UserID:       s.UserID,
-		LastAccessed: s.LastAccessed,
-		ExpiresAt:    s.ExpiresAt,
-		UpdatedAt:    s.UpdatedAt,
-		Version:      s.Version,
-		attributes:   copiedAttributes,
-		changed:      copiedChanged,
-		deleted:      copiedDeleted,
-		sm:           s.sm,
-		fromCache:    s.fromCache,
+		ID:                s.ID,
+		UserID:            s.UserID,
+		LastAccessed:      s.LastAccessed,
+		ExpiresAt:         s.ExpiresAt,
+		UpdatedAt:         s.UpdatedAt,
+		Version:           s.Version,
+		attributes:        copiedAttributes,
+		attributeVersions: copiedAttributeVersions,
+		changed:           copiedChanged,
+		deleted:           copiedDeleted,
+		sm:                s.sm,
+		fromCache:         s.fromCache,
 	}
 }
 

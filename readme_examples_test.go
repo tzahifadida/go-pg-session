@@ -49,7 +49,7 @@ func TestReadmeExamples(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, userID, retrievedSession.UserID)
 
-		// Updating a Session Attribute
+		// Updating a Session Attribute with Session-Level Version Check
 		var preferences map[string]string
 		_, err = retrievedSession.GetAttributeAndRetainUnmarshaled("preferences", &preferences)
 		require.NoError(t, err)
@@ -72,6 +72,35 @@ func TestReadmeExamples(t *testing.T) {
 
 		_, err = sessionManager.GetSession(context.Background(), updatedSession.ID)
 		assert.Error(t, err)
+	})
+
+	t.Run("UpdateSessionWithAttributeVersionCheck", func(t *testing.T) {
+		userID := uuid.New()
+		attributes := map[string]SessionAttributeValue{
+			"preferences": {Value: map[string]string{"theme": "dark", "language": "en"}},
+		}
+
+		session, err := sessionManager.CreateSession(context.Background(), userID, attributes)
+		require.NoError(t, err)
+
+		// Update the session with attribute version check
+		var preferences map[string]string
+		_, err = session.GetAttributeAndRetainUnmarshaled("preferences", &preferences)
+		require.NoError(t, err)
+
+		preferences["theme"] = "light"
+		err = session.UpdateAttribute("preferences", preferences, nil)
+		require.NoError(t, err)
+
+		updatedSession, err := sessionManager.UpdateSession(context.Background(), session, WithCheckAttributeVersion())
+		require.NoError(t, err)
+
+		// Verify the update
+		var updatedPreferences map[string]string
+		_, err = updatedSession.GetAttributeAndRetainUnmarshaled("preferences", &updatedPreferences)
+		require.NoError(t, err)
+		assert.Equal(t, "light", updatedPreferences["theme"])
+		assert.Equal(t, "en", updatedPreferences["language"])
 	})
 
 	t.Run("LoginHandler", func(t *testing.T) {
@@ -155,10 +184,11 @@ func TestReadmeExamples(t *testing.T) {
 		assert.Equal(t, "light", updatedPreferences["theme"])
 	})
 
+	// In the TestReadmeExamples function, update the AddToCartHandler test:
 	t.Run("AddToCartHandler", func(t *testing.T) {
 		handler := addToCartHandler(sessionManager)
 
-		// First, create a session
+		// First, create a session without a cart
 		userID := uuid.New()
 		session, err := sessionManager.CreateSession(context.Background(), userID, nil)
 		require.NoError(t, err)
@@ -183,6 +213,65 @@ func TestReadmeExamples(t *testing.T) {
 		_, err = updatedSession.GetAttributeAndRetainUnmarshaled("cart", &cartItems)
 		require.NoError(t, err)
 		assert.Contains(t, cartItems, "123")
+
+		// Add another item to the cart
+		req, err = http.NewRequest("POST", "/add-to-cart", nil)
+		require.NoError(t, err)
+		req.AddCookie(&http.Cookie{Name: "session_id", Value: session.ID.String()})
+		req.Form = map[string][]string{
+			"item_id": {"456"},
+		}
+
+		rr = httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+
+		assert.Equal(t, http.StatusOK, rr.Code)
+		assert.Equal(t, "Item added to cart", rr.Body.String())
+
+		// Verify the cart update again
+		updatedSession, err = sessionManager.GetSession(context.Background(), session.ID)
+		require.NoError(t, err)
+		_, err = updatedSession.GetAttributeAndRetainUnmarshaled("cart", &cartItems)
+		require.NoError(t, err)
+		assert.Contains(t, cartItems, "123")
+		assert.Contains(t, cartItems, "456")
+		assert.Len(t, cartItems, 2)
+	})
+
+	t.Run("UpdateUserSessionWithSessionLevelVersionCheck", func(t *testing.T) {
+		handler := updateUserSessionWithVersionCheck(sessionManager)
+
+		// First, create a session
+		userID := uuid.New()
+		initialSession, err := sessionManager.CreateSession(context.Background(), userID, map[string]SessionAttributeValue{
+			"last_access": {Value: time.Now().Add(-1 * time.Hour)},
+			"page_views":  {Value: 5},
+		})
+		require.NoError(t, err)
+
+		req, err := http.NewRequest("POST", "/update-session", nil)
+		require.NoError(t, err)
+		req.AddCookie(&http.Cookie{Name: "session_id", Value: initialSession.ID.String()})
+
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+
+		assert.Equal(t, http.StatusOK, rr.Code)
+		assert.Equal(t, "Session updated successfully", rr.Body.String())
+
+		// Verify the update
+		updatedSession, err := sessionManager.GetSession(context.Background(), initialSession.ID)
+		require.NoError(t, err)
+
+		var lastAccess time.Time
+		_, err = updatedSession.GetAttributeAndRetainUnmarshaled("last_access", &lastAccess)
+		require.NoError(t, err)
+		assert.True(t, lastAccess.After(time.Now().Add(-1*time.Minute)), "Last access should be updated")
+
+		var pageViews int
+		_, err = updatedSession.GetAttributeAndRetainUnmarshaled("page_views", &pageViews)
+		require.NoError(t, err)
+		assert.Equal(t, 6, pageViews, "Page views should be incremented")
 	})
 }
 
@@ -386,11 +475,12 @@ func updateUserPreferences(sm *SessionManager) http.HandlerFunc {
 				return
 			}
 
-			_, err = sm.UpdateSession(r.Context(), session, WithCheckVersion())
-			if errors.Is(err, ErrSessionVersionIsOutdated) {
-				continue
-			}
+			_, err = sm.UpdateSession(r.Context(), session, WithCheckAttributeVersion())
 			if err != nil {
+				if err.Error() == "attribute preferences version mismatch" {
+					// Specific attribute version conflict, retry
+					continue
+				}
 				http.Error(w, "Failed to save session", http.StatusInternalServerError)
 				return
 			}
@@ -437,11 +527,14 @@ func addToCartHandler(sm *SessionManager) http.HandlerFunc {
 			}
 
 			var cartItems []string
-			_, err = session.GetAttributeAndRetainUnmarshaled("cart", &cartItems)
-			if err != nil && err.Error() != "attribute cart not found" {
-				http.Error(w, "Failed to get cart", http.StatusInternalServerError)
-				return
+			attr, exists := session.GetAttribute("cart")
+			if exists {
+				cartItems, _ = attr.Value.([]string)
+			} else {
+				// Cart doesn't exist yet, create a new one
+				cartItems = []string{}
 			}
+
 			cartItems = append(cartItems, itemID)
 
 			err = session.UpdateAttribute("cart", cartItems, nil)
@@ -450,11 +543,11 @@ func addToCartHandler(sm *SessionManager) http.HandlerFunc {
 				return
 			}
 
-			_, err = sm.UpdateSession(r.Context(), session, WithCheckVersion())
-			if errors.Is(err, ErrSessionVersionIsOutdated) {
-				continue
-			}
+			_, err = sm.UpdateSession(r.Context(), session, WithCheckAttributeVersion())
 			if err != nil {
+				if err.Error() == "attribute cart version mismatch" {
+					continue // Retry
+				}
 				http.Error(w, "Failed to save session", http.StatusInternalServerError)
 				return
 			}
@@ -467,6 +560,64 @@ func addToCartHandler(sm *SessionManager) http.HandlerFunc {
 		http.Error(w, "Failed to add item to cart after max retries", http.StatusConflict)
 	}
 }
+
+func updateUserSessionWithVersionCheck(sm *SessionManager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		sessionCookie, err := r.Cookie("session_id")
+		if err != nil {
+			http.Error(w, "No session found", http.StatusBadRequest)
+			return
+		}
+		sessionID, _ := uuid.Parse(sessionCookie.Value)
+
+		maxRetries := 3
+		for attempt := 0; attempt < maxRetries; attempt++ {
+			session, err := sm.GetSession(r.Context(), sessionID)
+			if err != nil {
+				http.Error(w, "Failed to retrieve session", http.StatusInternalServerError)
+				return
+			}
+
+			// Update multiple session attributes
+			err = session.UpdateAttribute("last_access", time.Now(), nil)
+			if err != nil {
+				http.Error(w, "Failed to update last access", http.StatusInternalServerError)
+				return
+			}
+
+			var pageViews int
+			_, err = session.GetAttributeAndRetainUnmarshaled("page_views", &pageViews)
+			if err != nil {
+				http.Error(w, "Failed to get page views", http.StatusInternalServerError)
+				return
+			}
+			err = session.UpdateAttribute("page_views", pageViews+1, nil)
+			if err != nil {
+				http.Error(w, "Failed to update page views", http.StatusInternalServerError)
+				return
+			}
+
+			// Try to update with session version check
+			_, err = sm.UpdateSession(r.Context(), session, WithCheckVersion())
+			if errors.Is(err, ErrSessionVersionIsOutdated) {
+				// Version conflict, retry
+				continue
+			}
+			if err != nil {
+				http.Error(w, "Failed to save session", http.StatusInternalServerError)
+				return
+			}
+
+			// Success
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("Session updated successfully"))
+			return
+		}
+
+		http.Error(w, "Failed to update session after max retries", http.StatusConflict)
+	}
+}
+
 func loginHandlerWithSignedCookie(sm *SessionManager, signerPool *HMACSHA256SignerPool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		username := r.FormValue("username")

@@ -1521,3 +1521,145 @@ func retry(ctx context.Context, maxWait time.Duration, fn func() error) error {
 	}
 
 }
+
+func TestCheckAttributeVersion(t *testing.T) {
+	ctx := context.Background()
+
+	// Start PostgreSQL container
+	postgres, pgConnString, err := startPostgresContainer(ctx)
+	require.NoError(t, err)
+	defer postgres.Terminate(ctx)
+
+	// Create a new SessionManager
+	cfg := DefaultConfig()
+	cfg.CreateSchemaIfMissing = true
+	cfg.CacheSize = 100
+
+	sm, err := NewSessionManager(cfg, pgConnString)
+	require.NoError(t, err)
+	defer sm.Shutdown(context.Background())
+
+	// Set up a fake clock for testing
+	fakeClock := clockwork.NewFakeClock()
+	sm.setClock(fakeClock)
+
+	t.Run("SuccessfulAttributeUpdate", func(t *testing.T) {
+		userID := uuid.New()
+		attributes := map[string]SessionAttributeValue{
+			"key1": {Value: "value1", Marshaled: false},
+		}
+
+		session, err := sm.CreateSession(context.Background(), userID, attributes)
+		require.NoError(t, err)
+
+		// Update the attribute
+		err = session.UpdateAttribute("key1", "value2", nil)
+		require.NoError(t, err)
+
+		updatedSession, err := sm.UpdateSession(context.Background(), session, WithCheckAttributeVersion())
+		require.NoError(t, err)
+
+		// Verify the attribute was updated
+		attr, exists := updatedSession.GetAttribute("key1")
+		require.True(t, exists)
+		assert.Equal(t, "value2", attr.Value)
+		assert.Equal(t, 2, updatedSession.attributeVersions["key1"]) // Version should be incremented
+	})
+
+	t.Run("ConcurrentAttributeUpdateFailure", func(t *testing.T) {
+		userID := uuid.New()
+		attributes := map[string]SessionAttributeValue{
+			"key1": {Value: "value1", Marshaled: false},
+		}
+
+		session, err := sm.CreateSession(context.Background(), userID, attributes)
+		require.NoError(t, err)
+
+		// Simulate a concurrent update
+		concurrentSession, err := sm.GetSessionWithVersion(context.Background(), session.ID, session.Version)
+		require.NoError(t, err)
+
+		// Update the attribute in the original session
+		err = session.UpdateAttribute("key1", "value2", nil)
+		require.NoError(t, err)
+		_, err = sm.UpdateSession(context.Background(), session, WithCheckAttributeVersion())
+		require.NoError(t, err)
+
+		// Try to update the attribute in the concurrent session
+		err = concurrentSession.UpdateAttribute("key1", "value3", nil)
+		require.NoError(t, err)
+		_, err = sm.UpdateSession(context.Background(), concurrentSession, WithCheckAttributeVersion())
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "attribute key1 version mismatch")
+	})
+
+	t.Run("MultipleAttributeUpdates", func(t *testing.T) {
+		userID := uuid.New()
+		attributes := map[string]SessionAttributeValue{
+			"key1": {Value: "value1", Marshaled: false},
+			"key2": {Value: "value2", Marshaled: false},
+		}
+
+		session, err := sm.CreateSession(context.Background(), userID, attributes)
+		require.NoError(t, err)
+
+		// Update multiple attributes
+		err = session.UpdateAttribute("key1", "new_value1", nil)
+		require.NoError(t, err)
+		err = session.UpdateAttribute("key2", "new_value2", nil)
+		require.NoError(t, err)
+		err = session.UpdateAttribute("key3", "new_value3", nil)
+		require.NoError(t, err)
+
+		updatedSession, err := sm.UpdateSession(context.Background(), session, WithCheckAttributeVersion())
+		require.NoError(t, err)
+
+		// Verify all attributes were updated
+		attr1, exists := updatedSession.GetAttribute("key1")
+		require.True(t, exists)
+		assert.Equal(t, "new_value1", attr1.Value)
+		assert.Equal(t, 2, updatedSession.attributeVersions["key1"])
+
+		attr2, exists := updatedSession.GetAttribute("key2")
+		require.True(t, exists)
+		assert.Equal(t, "new_value2", attr2.Value)
+		assert.Equal(t, 2, updatedSession.attributeVersions["key2"])
+
+		attr3, exists := updatedSession.GetAttribute("key3")
+		require.True(t, exists)
+		assert.Equal(t, "new_value3", attr3.Value)
+		assert.Equal(t, 1, updatedSession.attributeVersions["key3"]) // New attribute, version should be 1
+	})
+
+	t.Run("AttributeUpdateWithoutVersionCheck", func(t *testing.T) {
+		userID := uuid.New()
+		attributes := map[string]SessionAttributeValue{
+			"key1": {Value: "value1", Marshaled: false},
+		}
+
+		session, err := sm.CreateSession(context.Background(), userID, attributes)
+		require.NoError(t, err)
+
+		// Simulate a concurrent update
+		concurrentSession, err := sm.GetSessionWithVersion(context.Background(), session.ID, session.Version)
+		require.NoError(t, err)
+
+		// Update the attribute in the original session
+		err = session.UpdateAttribute("key1", "value2", nil)
+		require.NoError(t, err)
+		_, err = sm.UpdateSession(context.Background(), session)
+		require.NoError(t, err)
+
+		// Update the attribute in the concurrent session without version check
+		err = concurrentSession.UpdateAttribute("key1", "value3", nil)
+		require.NoError(t, err)
+		updatedSession, err := sm.UpdateSession(context.Background(), concurrentSession)
+		require.NoError(t, err)
+
+		// Verify the attribute was updated
+		attr, exists := updatedSession.GetAttribute("key1")
+		require.True(t, exists)
+		assert.Equal(t, "value3", attr.Value)
+		assert.Equal(t, 3, updatedSession.attributeVersions["key1"]) // Version should be incremented twice
+	})
+}
