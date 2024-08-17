@@ -74,6 +74,9 @@ type Config struct {
 	// For dozens of nodes, you may want to turn it off.
 	NotifyOnUpdates bool
 
+	// NotifyOnFailedUpdates sends a removal notification when, for example, a version check fails. FALSE by default.
+	NotifyOnFailedUpdates bool
+
 	// CustomPGLN is an optional custom PGLN instance. If not supplied, a new one will be created with defaults.
 	CustomPGLN *pgln.PGListenNotify `json:"-"`
 
@@ -103,6 +106,7 @@ func DefaultConfig() *Config {
 		LastAccessUpdateInterval:  10 * time.Minute,
 		LastAccessUpdateBatchSize: 5000,
 		NotifyOnUpdates:           true,
+		NotifyOnFailedUpdates:     false,
 		// let's not risk it, your driver will simply fail if you don't increase it on the database side.
 		MaxOpenConnections:     30,
 		MaxIdleConnections:     0,
@@ -755,7 +759,7 @@ func (sm *SessionManager) UpdateSession(ctx context.Context, session *Session, o
 
 			// TX is going to fail so we have to use DB instead.
 			// Send notification to remove the session from other caches
-			if sm.Config.NotifyOnUpdates && !opts.DoNotNotify {
+			if sm.Config.NotifyOnFailedUpdates && sm.Config.NotifyOnUpdates && !opts.DoNotNotify {
 				err = sm.sendNotification(sm.db, NotificationTypeSessionsRemovalFromCache, []string{session.ID.String()})
 				if err != nil {
 					return nil, fmt.Errorf("failed to send notification: %v", err)
