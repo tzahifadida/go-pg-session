@@ -63,7 +63,7 @@ func TestReadmeExamplesPrev(t *testing.T) {
 
 	// Example: Updating a Session Attribute
 	newPreferences := map[string]string{"theme": "light"}
-	err = retrievedSession.UpdateAttribute("preferences", newPreferences, nil)
+	err = retrievedSession.UpdateAttribute("preferences", newPreferences)
 	require.NoError(t, err)
 
 	updatedSession, err := sessionManager.UpdateSession(context.Background(), retrievedSession)
@@ -208,10 +208,10 @@ func TestSessionManager(t *testing.T) {
 		retrievedSession, err := sm.GetSessionWithVersion(context.Background(), session.ID, 1)
 		require.NoError(t, err)
 
-		err = retrievedSession.UpdateAttribute("key", "new_value", nil)
+		err = retrievedSession.UpdateAttribute("key", "new_value")
 		require.NoError(t, err)
 
-		err = retrievedSession.UpdateAttribute("new_key", "another_value", nil)
+		err = retrievedSession.UpdateAttribute("new_key", "another_value")
 		require.NoError(t, err)
 
 		updatedSession, err := sm.UpdateSession(context.Background(), retrievedSession)
@@ -541,7 +541,7 @@ func TestSessionManager(t *testing.T) {
 
 		// Add a new expiring attribute
 		futureTime := fakeClock.Now().Add(time.Hour)
-		err = retrievedSession.UpdateAttribute("new_expiring", "new_expiring_value", &futureTime)
+		err = retrievedSession.UpdateAttribute("new_expiring", "new_expiring_value", WithExpiresAt(futureTime))
 		require.NoError(t, err)
 
 		updatedSession, err := sm.UpdateSession(context.Background(), retrievedSession)
@@ -602,7 +602,7 @@ func TestSessionManager(t *testing.T) {
 					counter, err := strconv.Atoi(counterValue)
 					require.NoError(t, err)
 
-					err = retrievedSession.UpdateAttribute("counter", strconv.Itoa(counter+1), nil)
+					err = retrievedSession.UpdateAttribute("counter", strconv.Itoa(counter+1))
 					require.NoError(t, err)
 
 					_, err = sm.UpdateSession(context.Background(), retrievedSession, WithCheckVersion())
@@ -927,7 +927,7 @@ func TestConcurrentSessionManagers(t *testing.T) {
 				time.Sleep(100 * time.Millisecond)
 
 				// Update the session
-				err = session.UpdateAttribute("key", fmt.Sprintf("updated_value%d", index), nil)
+				err = session.UpdateAttribute("key", fmt.Sprintf("updated_value%d", index))
 				require.NoError(t, err)
 				updatedSession, err := managers[index%numManagers].UpdateSession(context.Background(), session)
 				require.NoError(t, err)
@@ -1146,14 +1146,14 @@ func TestUpdateSessionWithCheckVersion(t *testing.T) {
 		require.NoError(t, err)
 
 		// Update the session with checkVersion = true
-		err = session.UpdateAttribute("key", "updated_value", nil)
+		err = session.UpdateAttribute("key", "updated_value")
 		require.NoError(t, err)
 		updatedSession, err := sm.UpdateSession(context.Background(), session, WithCheckVersion())
 		require.NoError(t, err)
 		assert.Equal(t, 2, updatedSession.Version)
 
 		// Try to update the session again with the old version
-		err = session.UpdateAttribute("key", "another_value", nil)
+		err = session.UpdateAttribute("key", "another_value")
 		require.NoError(t, err)
 		_, err = sm.UpdateSession(context.Background(), session, WithCheckVersion())
 		assert.Equal(t, ErrSessionVersionIsOutdated, err)
@@ -1169,14 +1169,14 @@ func TestUpdateSessionWithCheckVersion(t *testing.T) {
 		require.NoError(t, err)
 
 		// Update the session with checkVersion = false (default)
-		err = session.UpdateAttribute("key", "updated_value", nil)
+		err = session.UpdateAttribute("key", "updated_value")
 		require.NoError(t, err)
 		updatedSession, err := sm.UpdateSession(context.Background(), session)
 		require.NoError(t, err)
 		assert.Equal(t, 2, updatedSession.Version)
 
 		// Try to update the session again with the old version
-		err = session.UpdateAttribute("key", "another_value", nil)
+		err = session.UpdateAttribute("key", "another_value")
 		require.NoError(t, err)
 		finalSession, err := sm.UpdateSession(context.Background(), session)
 		require.NoError(t, err)
@@ -1321,7 +1321,7 @@ func TestGetAttributeAndRetainUnmarshaled(t *testing.T) {
 
 	t.Run("UnmarshalInvalidJSON", func(t *testing.T) {
 		// Update the session with an invalid JSON value
-		err := session.UpdateAttribute("invalidJSON", "{invalid_json", nil)
+		err := session.UpdateAttribute("invalidJSON", "{invalid_json")
 		require.NoError(t, err)
 		updatedSession, err := sm.UpdateSession(context.Background(), session)
 		require.NoError(t, err)
@@ -1552,7 +1552,7 @@ func TestCheckAttributeVersion(t *testing.T) {
 		require.NoError(t, err)
 
 		// Update the attribute
-		err = session.UpdateAttribute("key1", "value2", nil)
+		err = session.UpdateAttribute("key1", "value2")
 		require.NoError(t, err)
 
 		updatedSession, err := sm.UpdateSession(context.Background(), session, WithCheckAttributeVersion())
@@ -1579,13 +1579,13 @@ func TestCheckAttributeVersion(t *testing.T) {
 		require.NoError(t, err)
 
 		// Update the attribute in the original session
-		err = session.UpdateAttribute("key1", "value2", nil)
+		err = session.UpdateAttribute("key1", "value2")
 		require.NoError(t, err)
 		_, err = sm.UpdateSession(context.Background(), session, WithCheckAttributeVersion())
 		require.NoError(t, err)
 
 		// Try to update the attribute in the concurrent session
-		err = concurrentSession.UpdateAttribute("key1", "value3", nil)
+		err = concurrentSession.UpdateAttribute("key1", "value3")
 		require.NoError(t, err)
 		_, err = sm.UpdateSession(context.Background(), concurrentSession, WithCheckAttributeVersion())
 		require.Error(t, err)
@@ -1603,11 +1603,11 @@ func TestCheckAttributeVersion(t *testing.T) {
 		require.NoError(t, err)
 
 		// Update multiple attributes
-		err = session.UpdateAttribute("key1", "new_value1", nil)
+		err = session.UpdateAttribute("key1", "new_value1")
 		require.NoError(t, err)
-		err = session.UpdateAttribute("key2", "new_value2", nil)
+		err = session.UpdateAttribute("key2", "new_value2")
 		require.NoError(t, err)
-		err = session.UpdateAttribute("key3", "new_value3", nil)
+		err = session.UpdateAttribute("key3", "new_value3")
 		require.NoError(t, err)
 
 		updatedSession, err := sm.UpdateSession(context.Background(), session, WithCheckAttributeVersion())
@@ -1644,13 +1644,13 @@ func TestCheckAttributeVersion(t *testing.T) {
 		require.NoError(t, err)
 
 		// Update the attribute in the original session
-		err = session.UpdateAttribute("key1", "value2", nil)
+		err = session.UpdateAttribute("key1", "value2")
 		require.NoError(t, err)
 		_, err = sm.UpdateSession(context.Background(), session)
 		require.NoError(t, err)
 
 		// Update the attribute in the concurrent session without version check
-		err = concurrentSession.UpdateAttribute("key1", "value3", nil)
+		err = concurrentSession.UpdateAttribute("key1", "value3")
 		require.NoError(t, err)
 		updatedSession, err := sm.UpdateSession(context.Background(), concurrentSession)
 		require.NoError(t, err)

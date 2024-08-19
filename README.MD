@@ -82,7 +82,7 @@ Example use cases:
   ```go
   // Grant elevated access for 15 minutes after step-up authentication
   elevatedExpiry := time.Now().Add(15 * time.Minute)
-  session.UpdateAttribute("elevated_access", "true", &elevatedExpiry)
+  session.UpdateAttribute("elevated_access", "true", gopgsession.WithExpiresAt(elevatedExpiry))
   ```
 
 - **Limited-Time Offers**: Store time-sensitive promotional codes or offers that automatically expire:
@@ -90,7 +90,7 @@ Example use cases:
   ```go
   // Set a promotional offer that expires in 1 hour
   offerExpiry := time.Now().Add(1 * time.Hour)
-  session.UpdateAttribute("promo_code", "FLASH_SALE_20", &offerExpiry)
+  session.UpdateAttribute("promo_code", "FLASH_SALE_20", gopgsession.WithExpiresAt(offerExpiry))
   ```
 
 - **Abandoned UI Processes**: For multi-step processes in your UI, store temporary state that cleans itself up if the user abandons the process:
@@ -98,7 +98,7 @@ Example use cases:
   ```go
   // Store temporary form data for a multi-step process, expires in 30 minutes
   formExpiry := time.Now().Add(30 * time.Minute)
-  session.UpdateAttribute("temp_form_data", jsonEncodedFormData, &formExpiry)
+  session.UpdateAttribute("temp_form_data", jsonEncodedFormData, gopgsession.WithExpiresAt(formExpiry))
   ```
 
 - **Temporary Access Tokens**: Store short-lived access tokens for external services:
@@ -106,7 +106,7 @@ Example use cases:
   ```go
   // Store an API token that expires in 5 minutes
   tokenExpiry := time.Now().Add(5 * time.Minute)
-  session.UpdateAttribute("external_api_token", "token123", &tokenExpiry)
+  session.UpdateAttribute("external_api_token", "token123", gopgsession.WithExpiresAt(tokenExpiry))
   ```
 
 By leveraging attribute-level expiration, you can implement these features securely and efficiently, automatically cleaning up sensitive or temporary data without manual intervention or complex cleanup processes. This feature allows for more nuanced session management, enhancing both security and user experience in your application.
@@ -259,7 +259,11 @@ if err != nil {
     log.Fatalf("Failed to retrieve session: %v", err)
 }
 
-err = session.UpdateAttribute("last_access", time.Now(), nil)
+err = session.UpdateAttribute("last_access", time.Now())
+if err != nil {
+    log.Fatalf("Failed to update session attribute: %v", err)
+}
+
 if err != nil {
     log.Fatalf("Failed to update session attribute: %v", err)
 }
@@ -287,7 +291,7 @@ if err != nil {
 }
 
 preferences["theme"] = "light"
-err = session.UpdateAttribute("preferences", preferences, nil)
+err = session.UpdateAttribute("preferences", preferences)
 if err != nil {
     log.Fatalf("Failed to update session attribute: %v", err)
 }
@@ -425,7 +429,7 @@ func addToCartHandler(sm *gopgsession.SessionManager) http.HandlerFunc {
             }
             cartItems = append(cartItems, itemID)
 
-            err = session.UpdateAttribute("cart", cartItems, nil)
+            err = session.UpdateAttribute("cart", cartItems)
             if err != nil {
                 http.Error(w, "Failed to update cart", http.StatusInternalServerError)
                 return
@@ -521,7 +525,28 @@ func getSession(sm *gopgsession.SessionManager, r *http.Request) (*gopgsession.S
     if err != nil {
         return nil, fmt.Errorf("invalid session ID: %w", err)
     }
+    cookie, err := r.Cookie("session_id")
+    if err != nil {
+    return nil, err
+    }
+    
+    // Verify the signature and decode the session ID
+    isValid, sessionIDString, err := signerPool.VerifyAndDecode(cookie.Value)
+    if err != nil {
+    return nil, fmt.Errorf("failed to verify and decode session data: %w", err)
+    }
+    if !isValid {
+    return nil, fmt.Errorf("invalid session signature")
+    }
 
+    // Parse the session ID
+    sessionID, err := uuid.Parse(sessionIDString)
+    if err != nil {
+    return nil, fmt.Errorf("invalid session ID: %w", err)
+    }
+    
+    // Retrieve the session
+    return sm.GetSession(r.Context(), sessionID)
     // Retrieve the session
     return sm.GetSession(r.Context(), sessionID)
 }
@@ -801,7 +826,22 @@ func (sm *SessionManager) Shutdown(ctx context.Context) error
 Updates or sets an attribute for the session.
 
 ```go
-func (s *Session) UpdateAttribute(key string, value interface{}, expiresAt *time.Time) error
+func (s *Session) UpdateAttribute(key string, value interface{}, options ...UpdateAttributeOption) error
+```
+
+#### Update Attribute Options
+
+- `WithExpiresAt(time.Time)`: Sets an expiration time for the attribute.
+
+Usage examples:
+
+```go
+// Update an attribute without expiration
+err := session.UpdateAttribute("theme", "dark")
+
+// Update an attribute with expiration
+expiresAt := time.Now().Add(24 * time.Hour)
+err := session.UpdateAttribute("temporary_flag", true, gopgsession.WithExpiresAt(expiresAt))
 ```
 
 #### `DeleteAttribute`
@@ -848,14 +888,14 @@ Usage example:
 
 ```go
 var preferences struct {
-    Theme string `json:"theme"`
-    Language string `json:"language"`
+Theme string `json:"theme"`
+Language string `json:"language"`
 }
 
 attr, err := session.GetAttributeAndRetainUnmarshaled("preferences", &preferences)
 if err != nil {
-    log.Printf("Failed to get preferences: %v", err)
-    return
+log.Printf("Failed to get preferences: %v", err)
+return
 }
 
 log.Printf("User preferences: Theme=%s, Language=%s", preferences.Theme, preferences.Language)

@@ -56,7 +56,7 @@ func TestReadmeExamples(t *testing.T) {
 		_, err = retrievedSession.GetAttributeAndRetainUnmarshaled("preferences", &preferences)
 		require.NoError(t, err)
 		preferences["theme"] = "light"
-		err = retrievedSession.UpdateAttribute("preferences", preferences, nil)
+		err = retrievedSession.UpdateAttribute("preferences", preferences)
 		require.NoError(t, err)
 
 		updatedSession, err := sessionManager.UpdateSession(context.Background(), retrievedSession, WithCheckVersion())
@@ -91,7 +91,7 @@ func TestReadmeExamples(t *testing.T) {
 		require.NoError(t, err)
 
 		preferences["theme"] = "light"
-		err = session.UpdateAttribute("preferences", preferences, nil)
+		err = session.UpdateAttribute("preferences", preferences)
 		require.NoError(t, err)
 
 		updatedSession, err := sessionManager.UpdateSession(context.Background(), session, WithCheckAttributeVersion())
@@ -273,6 +273,36 @@ func TestReadmeExamples(t *testing.T) {
 		_, err = updatedSession.GetAttributeAndRetainUnmarshaled("page_views", &pageViews)
 		require.NoError(t, err)
 		assert.Equal(t, 6, pageViews, "Page views should be incremented")
+	})
+
+	t.Run("AttributeLevelExpiration", func(t *testing.T) {
+		userID := uuid.New()
+		session, err := sessionManager.CreateSession(context.Background(), userID, nil)
+		require.NoError(t, err)
+
+		// Grant elevated access for 15 minutes
+		elevatedExpiry := time.Now().Add(15 * time.Minute)
+		err = session.UpdateAttribute("elevated_access", "true", WithExpiresAt(elevatedExpiry))
+		require.NoError(t, err)
+
+		// Set a promotional offer that expires in 1 hour
+		offerExpiry := time.Now().Add(1 * time.Hour)
+		err = session.UpdateAttribute("promo_code", "FLASH_SALE_20", WithExpiresAt(offerExpiry))
+		require.NoError(t, err)
+
+		updatedSession, err := sessionManager.UpdateSession(context.Background(), session)
+		require.NoError(t, err)
+
+		// Verify attributes were set with expiration
+		elevatedAccess, exists := updatedSession.GetAttribute("elevated_access")
+		require.True(t, exists)
+		assert.Equal(t, "true", elevatedAccess.Value)
+		assert.NotNil(t, elevatedAccess.ExpiresAt)
+
+		promoCode, exists := updatedSession.GetAttribute("promo_code")
+		require.True(t, exists)
+		assert.Equal(t, "FLASH_SALE_20", promoCode.Value)
+		assert.NotNil(t, promoCode.ExpiresAt)
 	})
 }
 
@@ -625,7 +655,7 @@ func updateUserPreferences(sm *SessionManager) http.HandlerFunc {
 			}
 
 			preferences["theme"] = newTheme
-			err = session.UpdateAttribute("preferences", preferences, nil)
+			err = session.UpdateAttribute("preferences", preferences)
 			if err != nil {
 				http.Error(w, "Failed to update preferences", http.StatusInternalServerError)
 				return
@@ -693,7 +723,7 @@ func addToCartHandler(sm *SessionManager) http.HandlerFunc {
 
 			cartItems = append(cartItems, itemID)
 
-			err = session.UpdateAttribute("cart", cartItems, nil)
+			err = session.UpdateAttribute("cart", cartItems)
 			if err != nil {
 				http.Error(w, "Failed to update cart", http.StatusInternalServerError)
 				return
@@ -735,7 +765,7 @@ func updateUserSessionWithVersionCheck(sm *SessionManager) http.HandlerFunc {
 			}
 
 			// Update multiple session attributes
-			err = session.UpdateAttribute("last_access", time.Now(), nil)
+			err = session.UpdateAttribute("last_access", time.Now())
 			if err != nil {
 				http.Error(w, "Failed to update last access", http.StatusInternalServerError)
 				return
@@ -747,7 +777,7 @@ func updateUserSessionWithVersionCheck(sm *SessionManager) http.HandlerFunc {
 				http.Error(w, "Failed to get page views", http.StatusInternalServerError)
 				return
 			}
-			err = session.UpdateAttribute("page_views", pageViews+1, nil)
+			err = session.UpdateAttribute("page_views", pageViews+1)
 			if err != nil {
 				http.Error(w, "Failed to update page views", http.StatusInternalServerError)
 				return
@@ -851,5 +881,3 @@ func performCriticalOperation(sm *SessionManager, sessionID uuid.UUID) error {
 
 	return nil
 }
-
-// startPostgresContainer function should be implemented here or imported from your test utilities

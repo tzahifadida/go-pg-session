@@ -130,7 +130,7 @@ func BenchmarkConcurrentUpdateSession(b *testing.B) {
 					return
 				}
 
-				err = session.UpdateAttribute("key", fmt.Sprintf("updatedvalue%d", i), nil)
+				err = session.UpdateAttribute("key", fmt.Sprintf("updatedvalue%d", i))
 				if err != nil {
 					b.Error(err)
 					return
@@ -367,7 +367,7 @@ func benchmarkUpdateSession(b *testing.B, sm *SessionManager, sessionIDs []uuid.
 				return
 			}
 
-			err = session.UpdateAttribute("key", fmt.Sprintf("updatedvalue%d", i), nil)
+			err = session.UpdateAttribute("key", fmt.Sprintf("updatedvalue%d", i))
 			if err != nil {
 				b.Error(err)
 				return

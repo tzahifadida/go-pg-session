@@ -175,7 +175,7 @@ func (dl *DistributedLock) attemptLock(ctx context.Context, forceRefresh bool) e
 		return fmt.Errorf("failed to get current lock info: %w", err)
 	}
 
-	err = session.UpdateAttribute(dl.lockAttributeKey(), lockInfo, &expiresAt)
+	err = session.UpdateAttribute(dl.lockAttributeKey(), lockInfo, WithExpiresAt(expiresAt))
 	if err != nil {
 		return fmt.Errorf("failed to update lock attribute: %w", err)
 	}
@@ -315,7 +315,7 @@ func (dl *DistributedLock) ExtendLease(ctx context.Context, extension time.Durat
 	dl.config.LeaseTime += extension
 	dl.leaseExpiration = newExpiresAt
 
-	err = session.UpdateAttribute(dl.lockAttributeKey(), currentLockInfo, &newExpiresAt)
+	err = session.UpdateAttribute(dl.lockAttributeKey(), currentLockInfo, WithExpiresAt(newExpiresAt))
 	if err != nil {
 		return fmt.Errorf("failed to update lock attribute: %w", err)
 	}
@@ -361,7 +361,7 @@ func (dl *DistributedLock) sendHeartbeat(ctx context.Context) error {
 	now := dl.sm.clock.Now()
 	currentLockInfo.LastHeartbeat = now
 
-	err = session.UpdateAttribute(dl.lockAttributeKey(), currentLockInfo, &dl.leaseExpiration)
+	err = session.UpdateAttribute(dl.lockAttributeKey(), currentLockInfo, WithExpiresAt(dl.leaseExpiration))
 	if err != nil {
 		return fmt.Errorf("failed to update lock attribute: %w", err)
 	}

@@ -1140,13 +1140,27 @@ func (sm *SessionManager) refreshCache(ctx context.Context) error {
 	return nil
 }
 
+// UpdateAttributeOption is a function type that modifies UpdateAttributeOptions
+type UpdateAttributeOption func(*UpdateAttributeOptions)
+
+// UpdateAttributeOptions holds the options for updating an attribute
+type UpdateAttributeOptions struct {
+	ExpiresAt *time.Time
+}
+
+// WithExpiresAt sets the ExpiresAt option
+func WithExpiresAt(expiresAt time.Time) UpdateAttributeOption {
+	return func(opts *UpdateAttributeOptions) {
+		opts.ExpiresAt = &expiresAt
+	}
+}
+
 // UpdateAttribute sets or updates an attribute for the session.
 //
 // Parameters:
 //   - key: The key of the attribute to update.
 //   - value: The value to set for the attribute. This will be converted to a string.
-//   - expiresAt: An optional pointer to a time.Time value indicating when the attribute should expire.
-//     If nil, the attribute will not have an expiration time.
+//   - options: Variadic UpdateAttributeOption parameters to customize the update behavior.
 //
 // The method will return an error if:
 //   - The value cannot be converted to a string.
@@ -1155,12 +1169,17 @@ func (sm *SessionManager) refreshCache(ctx context.Context) error {
 // Example usage:
 //
 //	// Set an attribute without expiration
-//	err := session.UpdateAttribute("theme", "dark", nil)
+//	err := session.UpdateAttribute("theme", "dark")
 //
 //	// Set an attribute with expiration
 //	expiresAt := time.Now().Add(24 * time.Hour)
-//	err := session.UpdateAttribute("temporary_flag", true, &expiresAt)
-func (s *Session) UpdateAttribute(key string, value interface{}, expiresAt *time.Time) error {
+//	err := session.UpdateAttribute("temporary_flag", true, WithExpiresAt(expiresAt))
+func (s *Session) UpdateAttribute(key string, value interface{}, options ...UpdateAttributeOption) error {
+	opts := UpdateAttributeOptions{}
+	for _, option := range options {
+		option(&opts)
+	}
+
 	valueStr, err := convertToString(value)
 	if err != nil {
 		return fmt.Errorf("failed to convert attribute to string: %v", err)
@@ -1169,7 +1188,7 @@ func (s *Session) UpdateAttribute(key string, value interface{}, expiresAt *time
 		return fmt.Errorf("attribute value for key %s exceeds max length of %d", key, s.sm.Config.MaxAttributeLength)
 	}
 
-	attr := SessionAttributeValue{Value: value, ExpiresAt: expiresAt, Marshaled: false}
+	attr := SessionAttributeValue{Value: value, ExpiresAt: opts.ExpiresAt, Marshaled: false}
 	if existing, ok := s.attributes[key]; !ok {
 		// insert attribute and createsession starts at 1 so to avoid collisions, new attributes should be -1 to fail on update.
 		attr.Version = -1
