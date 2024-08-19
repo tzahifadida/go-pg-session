@@ -30,7 +30,7 @@ func TestReadmeExamples(t *testing.T) {
 	cfg.SessionExpiration = 24 * time.Hour // 1 day
 	cfg.CreateSchemaIfMissing = true
 
-	sessionManager, err := NewSessionManager(cfg, db)
+	sessionManager, err := NewSessionManager(ctx, cfg, db)
 	require.NoError(t, err)
 	defer sessionManager.Shutdown(context.Background())
 
@@ -288,7 +288,7 @@ func TestSignedCookiesExample(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.CreateSchemaIfMissing = true
 
-	sessionManager, err := NewSessionManager(cfg, db)
+	sessionManager, err := NewSessionManager(ctx, cfg, db)
 	require.NoError(t, err)
 	defer sessionManager.Shutdown(context.Background())
 
@@ -376,7 +376,7 @@ func TestDistributedLockExamples(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.CreateSchemaIfMissing = true
 
-	sessionManager, err := NewSessionManager(cfg, db)
+	sessionManager, err := NewSessionManager(ctx, cfg, db)
 	require.NoError(t, err)
 	defer sessionManager.Shutdown(context.Background())
 
@@ -507,7 +507,7 @@ func TestPerformCriticalOperation(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.CreateSchemaIfMissing = true
 
-	sessionManager, err := NewSessionManager(cfg, db)
+	sessionManager, err := NewSessionManager(ctx, cfg, db)
 	require.NoError(t, err)
 	defer sessionManager.Shutdown(context.Background())
 

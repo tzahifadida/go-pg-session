@@ -165,6 +165,7 @@ type SessionManager struct {
 	lastAccessUpdates     map[uuid.UUID]time.Time
 	lastAccessUpdateMutex sync.Mutex
 	clock                 clockwork.Clock
+	ctx                   context.Context
 }
 
 type GetSessionOptions struct {
@@ -175,12 +176,13 @@ type GetSessionOptions struct {
 // NewSessionManager creates a new SessionManager with the given configuration and connection string.
 //
 // Parameters:
+//   - ctx: A long-running context that should hold up until shutdown
 //   - cfg: A pointer to a Config struct containing the configuration options for the SessionManager.
 //   - db: An pgx (v5) stdlib
 //
 // Returns:
 //   - A pointer to the created SessionManager and an error if any occurred during initialization.
-func NewSessionManager(cfg *Config, db *sql.DB) (*SessionManager, error) {
+func NewSessionManager(ctx context.Context, cfg *Config, db *sql.DB) (*SessionManager, error) {
 	if cfg == nil {
 		cfg = DefaultConfig()
 	} else {
@@ -227,6 +229,7 @@ func NewSessionManager(cfg *Config, db *sql.DB) (*SessionManager, error) {
 		nodeID:            nodeID,
 		lastAccessUpdates: make(map[uuid.UUID]time.Time),
 		clock:             clockwork.NewRealClock(),
+		ctx:               ctx,
 	}
 
 	if err := sm.checkTables(); err != nil {
@@ -238,7 +241,7 @@ func NewSessionManager(cfg *Config, db *sql.DB) (*SessionManager, error) {
 		sm.pgln = cfg.CustomPGLN
 	} else {
 		builder := pgln.NewPGListenNotifyBuilder().
-			SetContext(context.Background()).
+			SetContext(ctx).
 			SetReconnectInterval(1 * time.Second).
 			SetDB(db)
 
@@ -437,7 +440,7 @@ func (sm *SessionManager) CreateSession(ctx context.Context, userID uuid.UUID, a
 		return nil, fmt.Errorf("failed to commit transaction: %v", err)
 	}
 
-	go sm.enforceMaxSessions(ctx, userID)
+	go sm.enforceMaxSessions(sm.ctx, userID)
 
 	return session.deepCopy(), nil
 }
@@ -506,7 +509,7 @@ func (sm *SessionManager) GetSessionWithVersion(ctx context.Context, sessionID u
 				sm.mutex.Unlock()
 			}
 			if exists {
-				go sm.updateSessionAccessAsync(ctx, sessionID)
+				go sm.updateSessionAccessAsync(sm.ctx, sessionID)
 				return sessionCopy, nil
 			}
 		} else {
@@ -547,7 +550,7 @@ func (sm *SessionManager) GetSessionWithVersion(ctx context.Context, sessionID u
 	sm.addOrUpdateCache(session)
 
 	if !opts.DoNotUpdateSessionLastAccess {
-		sm.updateSessionAccessAsync(ctx, sessionID)
+		sm.updateSessionAccessAsync(sm.ctx, sessionID)
 	}
 
 	return session.deepCopy(), nil
@@ -1490,7 +1493,7 @@ func (sm *SessionManager) processLastAccessUpdates() {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	ctx, cancel := context.WithTimeout(sm.ctx, 10*time.Minute)
 	defer cancel()
 
 	var sessionIDs []uuid.UUID

@@ -197,7 +197,7 @@ if err != nil {
 defer db.Close()
 
 // Create a new SessionManager
-sessionManager, err := gopgsession.NewSessionManager(cfg, db)
+sessionManager, err := gopgsession.NewSessionManager(ctx, cfg, db)
 if err != nil {
     log.Fatalf("Failed to initialize session manager: %v", err)
 }
@@ -719,7 +719,7 @@ When using version checking (either session-level or attribute-level), keep in m
 Initializes a new `SessionManager` with the given configuration and PostgreSQL database connection.
 
 ```go
-func NewSessionManager(cfg *Config, db *sql.DB) (*SessionManager, error)
+func NewSessionManager(ctx context.Context, cfg *Config, db *sql.DB) (*SessionManager, error)
 ```
 
 ### `CreateSession`

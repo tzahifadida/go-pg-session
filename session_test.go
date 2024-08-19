@@ -34,7 +34,7 @@ func TestReadmeExamplesPrev(t *testing.T) {
 	cfg.SessionExpiration = 24 * time.Hour // 1 day
 	cfg.CreateSchemaIfMissing = true
 
-	sessionManager, err := NewSessionManager(cfg, db)
+	sessionManager, err := NewSessionManager(ctx, cfg, db)
 	require.NoError(t, err)
 	defer sessionManager.Shutdown(context.Background())
 
@@ -119,7 +119,7 @@ func TestSessionManager(t *testing.T) {
 		LastAccessUpdateBatchSize: 100,
 	}
 
-	sm, err := NewSessionManager(cfg, db)
+	sm, err := NewSessionManager(ctx, cfg, db)
 	require.NoError(t, err)
 	defer sm.Shutdown(context.Background())
 
@@ -649,7 +649,7 @@ func TestSessionManagerWithRealClock(t *testing.T) {
 	cfg.CleanupInterval = 1 * time.Second
 	cfg.LastAccessUpdateInterval = 1 * time.Second
 
-	sm, err := NewSessionManager(cfg, db)
+	sm, err := NewSessionManager(ctx, cfg, db)
 	require.NoError(t, err)
 	defer sm.Shutdown(context.Background())
 
@@ -711,7 +711,7 @@ func TestSessionManagerEdgeCases(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.CreateSchemaIfMissing = true
 
-	sm, err := NewSessionManager(cfg, db)
+	sm, err := NewSessionManager(ctx, cfg, db)
 	require.NoError(t, err)
 	defer sm.Shutdown(context.Background())
 
@@ -778,7 +778,7 @@ func TestSessionManagerPerformance(t *testing.T) {
 	cfg.CreateSchemaIfMissing = true
 	cfg.CacheSize = 10000
 
-	sm, err := NewSessionManager(cfg, db)
+	sm, err := NewSessionManager(ctx, cfg, db)
 	require.NoError(t, err)
 	defer sm.Shutdown(context.Background())
 
@@ -902,7 +902,7 @@ func TestConcurrentSessionManagers(t *testing.T) {
 	numManagers := 3
 	managers := make([]*SessionManager, numManagers)
 	for i := 0; i < numManagers; i++ {
-		sm, err := NewSessionManager(cfg, db)
+		sm, err := NewSessionManager(ctx, cfg, db)
 		require.NoError(t, err)
 		defer sm.Shutdown(context.Background())
 		managers[i] = sm
@@ -962,7 +962,7 @@ func TestSignSessionID(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.CreateSchemaIfMissing = true
 
-	sm, err := NewSessionManager(cfg, db)
+	sm, err := NewSessionManager(ctx, cfg, db)
 	require.NoError(t, err)
 	defer sm.Shutdown(context.Background())
 
@@ -1011,7 +1011,7 @@ func TestRefreshCache(t *testing.T) {
 	cfg.CacheSize = 100
 	cfg.NotifyOnUpdates = false // Disable notifications for this test
 
-	sm, err := NewSessionManager(cfg, db)
+	sm, err := NewSessionManager(ctx, cfg, db)
 	require.NoError(t, err)
 	defer sm.Shutdown(context.Background())
 
@@ -1069,7 +1069,7 @@ func TestOutOfSyncBehavior(t *testing.T) {
 	cfg.CreateSchemaIfMissing = true
 	cfg.CacheSize = 100
 
-	sm, err := NewSessionManager(cfg, db)
+	sm, err := NewSessionManager(ctx, cfg, db)
 	require.NoError(t, err)
 	defer sm.Shutdown(context.Background())
 
@@ -1133,7 +1133,7 @@ func TestUpdateSessionWithCheckVersion(t *testing.T) {
 	cfg.CreateSchemaIfMissing = true
 	cfg.CacheSize = 100
 
-	sm, err := NewSessionManager(cfg, db)
+	sm, err := NewSessionManager(ctx, cfg, db)
 	require.NoError(t, err)
 	defer sm.Shutdown(context.Background())
 
@@ -1198,7 +1198,7 @@ func TestGetAttributeAndRetainUnmarshaled(t *testing.T) {
 	cfg.CreateSchemaIfMissing = true
 	cfg.CacheSize = 100
 
-	sm, err := NewSessionManager(cfg, db)
+	sm, err := NewSessionManager(ctx, cfg, db)
 	require.NoError(t, err)
 	defer sm.Shutdown(context.Background())
 
@@ -1348,7 +1348,7 @@ func TestSessionManagerResilience(t *testing.T) {
 	cfg.CacheSize = 100
 	cfg.NotifyOnUpdates = true
 
-	sm, err := NewSessionManager(cfg, db)
+	sm, err := NewSessionManager(ctx, cfg, db)
 	require.NoError(t, err)
 	defer sm.Shutdown(context.Background())
 
@@ -1535,7 +1535,7 @@ func TestCheckAttributeVersion(t *testing.T) {
 	cfg.CreateSchemaIfMissing = true
 	cfg.CacheSize = 100
 
-	sm, err := NewSessionManager(cfg, db)
+	sm, err := NewSessionManager(ctx, cfg, db)
 	require.NoError(t, err)
 	defer sm.Shutdown(context.Background())
 

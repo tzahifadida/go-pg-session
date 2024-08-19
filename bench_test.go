@@ -28,7 +28,7 @@ func BenchmarkConcurrentGetSession(b *testing.B) {
 	cfg.CreateSchemaIfMissing = true
 	cfg.CacheSize = 10000
 
-	sm, err := NewSessionManager(cfg, pgConnString)
+	sm, err := NewSessionManager(ctx, cfg, pgConnString)
 	require.NoError(b, err)
 	defer sm.Shutdown(context.Background())
 
@@ -95,7 +95,7 @@ func BenchmarkConcurrentUpdateSession(b *testing.B) {
 	cfg.CreateSchemaIfMissing = true
 	cfg.CacheSize = 10000
 
-	sm, err := NewSessionManager(cfg, pgConnString)
+	sm, err := NewSessionManager(ctx, cfg, pgConnString)
 	require.NoError(b, err)
 	defer sm.Shutdown(context.Background())
 
@@ -237,7 +237,7 @@ func BenchmarkSessionManagers(b *testing.B) {
 	cfg.CreateSchemaIfMissing = true
 	cfg.CacheSize = 10000
 
-	sm, err := NewSessionManager(cfg, pgConnString)
+	sm, err := NewSessionManager(ctx, cfg, pgConnString)
 	require.NoError(b, err)
 	defer sm.Shutdown(context.Background())
 

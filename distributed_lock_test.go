@@ -23,7 +23,7 @@ func TestDistributedLockConcurrent(t *testing.T) {
 	config := DefaultConfig()
 	config.CreateSchemaIfMissing = true
 
-	sm, err := NewSessionManager(config, db)
+	sm, err := NewSessionManager(ctx, config, db)
 	require.NoError(t, err)
 	defer sm.Shutdown(context.Background())
 
