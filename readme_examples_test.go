@@ -19,9 +19,10 @@ import (
 func TestReadmeExamples(t *testing.T) {
 	// Start PostgreSQL container
 	ctx := context.Background()
-	postgres, pgConnString, err := startPostgresContainer(ctx)
+	postgres, db, _, err := startPostgresContainer(ctx)
 	require.NoError(t, err)
 	defer postgres.Terminate(ctx)
+	defer db.Close()
 
 	// Create a new SessionManager
 	cfg := DefaultConfig()
@@ -29,7 +30,7 @@ func TestReadmeExamples(t *testing.T) {
 	cfg.SessionExpiration = 24 * time.Hour // 1 day
 	cfg.CreateSchemaIfMissing = true
 
-	sessionManager, err := NewSessionManager(cfg, pgConnString)
+	sessionManager, err := NewSessionManager(cfg, db)
 	require.NoError(t, err)
 	defer sessionManager.Shutdown(context.Background())
 
@@ -278,15 +279,16 @@ func TestReadmeExamples(t *testing.T) {
 func TestSignedCookiesExample(t *testing.T) {
 	// Start PostgreSQL container
 	ctx := context.Background()
-	postgres, pgConnString, err := startPostgresContainer(ctx)
+	postgres, db, _, err := startPostgresContainer(ctx)
 	require.NoError(t, err)
 	defer postgres.Terminate(ctx)
+	defer db.Close()
 
 	// Create a new SessionManager
 	cfg := DefaultConfig()
 	cfg.CreateSchemaIfMissing = true
 
-	sessionManager, err := NewSessionManager(cfg, pgConnString)
+	sessionManager, err := NewSessionManager(cfg, db)
 	require.NoError(t, err)
 	defer sessionManager.Shutdown(context.Background())
 
@@ -366,14 +368,15 @@ func TestSignedCookiesExample(t *testing.T) {
 func TestDistributedLockExamples(t *testing.T) {
 	// Setup
 	ctx := context.Background()
-	postgres, pgConnString, err := startPostgresContainer(ctx)
+	postgres, db, _, err := startPostgresContainer(ctx)
 	require.NoError(t, err)
 	defer postgres.Terminate(ctx)
+	defer db.Close()
 
 	cfg := DefaultConfig()
 	cfg.CreateSchemaIfMissing = true
 
-	sessionManager, err := NewSessionManager(cfg, pgConnString)
+	sessionManager, err := NewSessionManager(cfg, db)
 	require.NoError(t, err)
 	defer sessionManager.Shutdown(context.Background())
 
@@ -496,14 +499,15 @@ func TestDistributedLockExamples(t *testing.T) {
 func TestPerformCriticalOperation(t *testing.T) {
 	// Setup
 	ctx := context.Background()
-	postgres, pgConnString, err := startPostgresContainer(ctx)
+	postgres, db, _, err := startPostgresContainer(ctx)
 	require.NoError(t, err)
 	defer postgres.Terminate(ctx)
+	defer db.Close()
 
 	cfg := DefaultConfig()
 	cfg.CreateSchemaIfMissing = true
 
-	sessionManager, err := NewSessionManager(cfg, pgConnString)
+	sessionManager, err := NewSessionManager(cfg, db)
 	require.NoError(t, err)
 	defer sessionManager.Shutdown(context.Background())
 

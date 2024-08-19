@@ -15,7 +15,7 @@ import (
 func TestDistributedLockConcurrent(t *testing.T) {
 	// Setup
 	ctx := context.Background()
-	postgres, pgConnString, err := startPostgresContainer(ctx)
+	postgres, db, _, err := startPostgresContainer(ctx)
 	require.NoError(t, err)
 	defer postgres.Terminate(ctx)
 
@@ -23,7 +23,7 @@ func TestDistributedLockConcurrent(t *testing.T) {
 	config := DefaultConfig()
 	config.CreateSchemaIfMissing = true
 
-	sm, err := NewSessionManager(config, pgConnString)
+	sm, err := NewSessionManager(config, db)
 	require.NoError(t, err)
 	defer sm.Shutdown(context.Background())
 

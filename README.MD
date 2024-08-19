@@ -14,7 +14,7 @@ If you find this project helpful, please give it a star on GitHub! Your support 
 - [Installation](#installation)
 - [Configuration](#configuration)
 - [Usage Examples](#usage-examples)
-- [Choosing Between CheckVersion and CheckAttributeVersion](#choosing-between-checkVersion-and-checkAttributeVersion)
+- [Choosing Between CheckVersion and CheckAttributeVersion](#choosing-between-checkversion-and-checkattributeversion)
 - [Distributed Locks](#distributed-locks)
 - [Performance Considerations](#performance-considerations)
 - [Exported Functions and Configuration](#exported-functions-and-configuration)
@@ -168,32 +168,40 @@ Create a configuration using the `Config` struct. You can use the `DefaultConfig
 - `LastAccessUpdateInterval`: Interval for updating the last access time of sessions.
 - `LastAccessUpdateBatchSize`: Batch size for updating last access times.
 - `NotifyOnUpdates`: Flag to enable/disable notifications on updates.
-- `MaxIdleConnections`: Maximum number of idle connections in the connection pool.
-- `MaxOpenConnections`: Maximum number of open connections to the database.
-- `ConnectionsMaxLifetime`: Maximum amount of time a connection may be reused.
-- `ConnectionsMaxIdleTime`: Maximum amount of time a connection may be idle before being closed.
 
 ```go
 cfg := gopgsession.DefaultConfig()
 cfg.MaxSessions = 10
 cfg.SessionExpiration = 24 * time.Hour // 1 day
 cfg.CreateSchemaIfMissing = true
-cfg.MaxOpenConnections = 50
-cfg.ConnectionsMaxLifetime = 30 * time.Minute
 ```
 
 ## Usage Examples
 
 ### Initialization
 
-Initialize a `SessionManager` with the configuration and a PostgreSQL connection string.
+Initialize a `SessionManager` with the configuration and a PostgreSQL database connection.
 
 ```go
-pgxConnectionString := "postgres://username:password@localhost/dbname?sslmode=disable"
-sessionManager, err := gopgsession.NewSessionManager(cfg, pgxConnectionString)
+import (
+    "database/sql"
+    _ "github.com/jackc/pgx/v5/stdlib"
+    "github.com/tzahifadida/go-pg-session"
+)
+
+// Open a database connection
+db, err := sql.Open("pgx", "postgres://username:password@localhost/dbname?sslmode=disable")
+if err != nil {
+    log.Fatalf("Failed to open database: %v", err)
+}
+defer db.Close()
+
+// Create a new SessionManager
+sessionManager, err := gopgsession.NewSessionManager(cfg, db)
 if err != nil {
     log.Fatalf("Failed to initialize session manager: %v", err)
 }
+defer sessionManager.Shutdown(context.Background())
 ```
 
 ### Creating a Session
@@ -708,10 +716,10 @@ When using version checking (either session-level or attribute-level), keep in m
 
 ### `NewSessionManager`
 
-Initializes a new `SessionManager` with the given configuration and PostgreSQL connection string.
+Initializes a new `SessionManager` with the given configuration and PostgreSQL database connection.
 
 ```go
-func NewSessionManager(cfg *Config, pgxConnectionString string) (*SessionManager, error)
+func NewSessionManager(cfg *Config, db *sql.DB) (*SessionManager, error)
 ```
 
 ### `CreateSession`
@@ -832,14 +840,14 @@ Usage example:
 
 ```go
 var preferences struct {
-Theme string `json:"theme"`
-Language string `json:"language"`
+    Theme string `json:"theme"`
+    Language string `json:"language"`
 }
 
 attr, err := session.GetAttributeAndRetainUnmarshaled("preferences", &preferences)
 if err != nil {
-log.Printf("Failed to get preferences: %v", err)
-return
+    log.Printf("Failed to get preferences: %v", err)
+    return
 }
 
 log.Printf("User preferences: Theme=%s, Language=%s", preferences.Theme, preferences.Language)
@@ -847,14 +855,54 @@ log.Printf("User preferences: Theme=%s, Language=%s", preferences.Theme, prefere
 // The unmarshaled value is now cached in the session for future use
 ```
 
+### Distributed Lock Methods
+
+#### `NewDistributedLock`
+
+Creates a new distributed lock for a given session and resource.
+
+```go
+func (sm *SessionManager) NewDistributedLock(sessionID uuid.UUID, resourceName string, config *DistributedLockConfig) *DistributedLock
+```
+
+#### `Lock`
+
+Attempts to acquire the distributed lock.
+
+```go
+func (dl *DistributedLock) Lock(ctx context.Context) error
+```
+
+#### `Unlock`
+
+Releases the distributed lock.
+
+```go
+func (dl *DistributedLock) Unlock(ctx context.Context) error
+```
+
+#### `ExtendLease`
+
+Extends the lease time of the lock.
+
+```go
+func (dl *DistributedLock) ExtendLease(ctx context.Context, duration time.Duration) error
+```
+
 ## Contributing
 
-Contributions are welcome! Feel free to open issues or submit pull requests.
+Contributions to `go-pg-session` are welcome! Here are some ways you can contribute:
+
+1. Report bugs or request features by opening an issue.
+2. Improve documentation.
+3. Submit pull requests with bug fixes or new features.
+
+Please ensure that your code adheres to the existing style and that all tests pass before submitting a pull request.
 
 ## License
 
-This project is licensed under the MIT License.
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
 
 ---
 
-For more details and examples, please refer to the `session_test.go` file in the repository.
+Thank you for using `go-pg-session`! If you have any questions, suggestions, or encounter any issues, please don't hesitate to open an issue on the GitHub repository. Your feedback and contributions are greatly appreciated and help make this library better for everyone.

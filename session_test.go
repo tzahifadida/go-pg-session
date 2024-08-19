@@ -2,11 +2,11 @@ package gopgsession
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"github.com/google/uuid"
 	_ "github.com/jackc/pgx/v5/stdlib"
-	"github.com/jmoiron/sqlx"
 	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -24,7 +24,7 @@ func TestReadmeExamplesPrev(t *testing.T) {
 	ctx := context.Background()
 
 	// Start PostgreSQL container
-	postgres, pgConnString, err := startPostgresContainer(ctx)
+	postgres, db, _, err := startPostgresContainer(ctx)
 	require.NoError(t, err)
 	defer postgres.Terminate(ctx)
 
@@ -34,7 +34,7 @@ func TestReadmeExamplesPrev(t *testing.T) {
 	cfg.SessionExpiration = 24 * time.Hour // 1 day
 	cfg.CreateSchemaIfMissing = true
 
-	sessionManager, err := NewSessionManager(cfg, pgConnString)
+	sessionManager, err := NewSessionManager(cfg, db)
 	require.NoError(t, err)
 	defer sessionManager.Shutdown(context.Background())
 
@@ -100,7 +100,7 @@ func TestSessionManager(t *testing.T) {
 	ctx := context.Background()
 
 	// Start PostgreSQL container
-	postgres, pgConnString, err := startPostgresContainer(ctx)
+	postgres, db, _, err := startPostgresContainer(ctx)
 	require.NoError(t, err)
 	defer postgres.Terminate(ctx)
 
@@ -119,7 +119,7 @@ func TestSessionManager(t *testing.T) {
 		LastAccessUpdateBatchSize: 100,
 	}
 
-	sm, err := NewSessionManager(cfg, pgConnString)
+	sm, err := NewSessionManager(cfg, db)
 	require.NoError(t, err)
 	defer sm.Shutdown(context.Background())
 
@@ -639,7 +639,7 @@ func TestSessionManagerWithRealClock(t *testing.T) {
 	ctx := context.Background()
 
 	// Start PostgreSQL container
-	postgres, pgConnString, err := startPostgresContainer(ctx)
+	postgres, db, _, err := startPostgresContainer(ctx)
 	require.NoError(t, err)
 	defer postgres.Terminate(ctx)
 
@@ -649,7 +649,7 @@ func TestSessionManagerWithRealClock(t *testing.T) {
 	cfg.CleanupInterval = 1 * time.Second
 	cfg.LastAccessUpdateInterval = 1 * time.Second
 
-	sm, err := NewSessionManager(cfg, pgConnString)
+	sm, err := NewSessionManager(cfg, db)
 	require.NoError(t, err)
 	defer sm.Shutdown(context.Background())
 
@@ -703,7 +703,7 @@ func TestSessionManagerEdgeCases(t *testing.T) {
 	ctx := context.Background()
 
 	// Start PostgreSQL container
-	postgres, pgConnString, err := startPostgresContainer(ctx)
+	postgres, db, _, err := startPostgresContainer(ctx)
 	require.NoError(t, err)
 	defer postgres.Terminate(ctx)
 
@@ -711,7 +711,7 @@ func TestSessionManagerEdgeCases(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.CreateSchemaIfMissing = true
 
-	sm, err := NewSessionManager(cfg, pgConnString)
+	sm, err := NewSessionManager(cfg, db)
 	require.NoError(t, err)
 	defer sm.Shutdown(context.Background())
 
@@ -769,7 +769,7 @@ func TestSessionManagerPerformance(t *testing.T) {
 	ctx := context.Background()
 
 	// Start PostgreSQL container
-	postgres, pgConnString, err := startPostgresContainer(ctx)
+	postgres, db, _, err := startPostgresContainer(ctx)
 	require.NoError(t, err)
 	defer postgres.Terminate(ctx)
 
@@ -778,7 +778,7 @@ func TestSessionManagerPerformance(t *testing.T) {
 	cfg.CreateSchemaIfMissing = true
 	cfg.CacheSize = 10000
 
-	sm, err := NewSessionManager(cfg, pgConnString)
+	sm, err := NewSessionManager(cfg, db)
 	require.NoError(t, err)
 	defer sm.Shutdown(context.Background())
 
@@ -889,7 +889,7 @@ func TestConcurrentSessionManagers(t *testing.T) {
 	ctx := context.Background()
 
 	// Start PostgreSQL container
-	postgres, pgConnString, err := startPostgresContainer(ctx)
+	postgres, db, _, err := startPostgresContainer(ctx)
 	require.NoError(t, err)
 	defer postgres.Terminate(ctx)
 
@@ -902,7 +902,7 @@ func TestConcurrentSessionManagers(t *testing.T) {
 	numManagers := 3
 	managers := make([]*SessionManager, numManagers)
 	for i := 0; i < numManagers; i++ {
-		sm, err := NewSessionManager(cfg, pgConnString)
+		sm, err := NewSessionManager(cfg, db)
 		require.NoError(t, err)
 		defer sm.Shutdown(context.Background())
 		managers[i] = sm
@@ -954,7 +954,7 @@ func TestSignSessionID(t *testing.T) {
 	ctx := context.Background()
 
 	// Start PostgreSQL container
-	postgres, pgConnString, err := startPostgresContainer(ctx)
+	postgres, db, _, err := startPostgresContainer(ctx)
 	require.NoError(t, err)
 	defer postgres.Terminate(ctx)
 
@@ -962,7 +962,7 @@ func TestSignSessionID(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.CreateSchemaIfMissing = true
 
-	sm, err := NewSessionManager(cfg, pgConnString)
+	sm, err := NewSessionManager(cfg, db)
 	require.NoError(t, err)
 	defer sm.Shutdown(context.Background())
 
@@ -1001,7 +1001,7 @@ func TestRefreshCache(t *testing.T) {
 	ctx := context.Background()
 
 	// Start PostgreSQL container
-	postgres, pgConnString, err := startPostgresContainer(ctx)
+	postgres, db, _, err := startPostgresContainer(ctx)
 	require.NoError(t, err)
 	defer postgres.Terminate(ctx)
 
@@ -1011,7 +1011,7 @@ func TestRefreshCache(t *testing.T) {
 	cfg.CacheSize = 100
 	cfg.NotifyOnUpdates = false // Disable notifications for this test
 
-	sm, err := NewSessionManager(cfg, pgConnString)
+	sm, err := NewSessionManager(cfg, db)
 	require.NoError(t, err)
 	defer sm.Shutdown(context.Background())
 
@@ -1060,7 +1060,7 @@ func TestOutOfSyncBehavior(t *testing.T) {
 	ctx := context.Background()
 
 	// Start PostgreSQL container
-	postgres, pgConnString, err := startPostgresContainer(ctx)
+	postgres, db, _, err := startPostgresContainer(ctx)
 	require.NoError(t, err)
 	defer postgres.Terminate(ctx)
 
@@ -1069,7 +1069,7 @@ func TestOutOfSyncBehavior(t *testing.T) {
 	cfg.CreateSchemaIfMissing = true
 	cfg.CacheSize = 100
 
-	sm, err := NewSessionManager(cfg, pgConnString)
+	sm, err := NewSessionManager(cfg, db)
 	require.NoError(t, err)
 	defer sm.Shutdown(context.Background())
 
@@ -1124,7 +1124,7 @@ func TestUpdateSessionWithCheckVersion(t *testing.T) {
 	ctx := context.Background()
 
 	// Start PostgreSQL container
-	postgres, pgConnString, err := startPostgresContainer(ctx)
+	postgres, db, _, err := startPostgresContainer(ctx)
 	require.NoError(t, err)
 	defer postgres.Terminate(ctx)
 
@@ -1133,7 +1133,7 @@ func TestUpdateSessionWithCheckVersion(t *testing.T) {
 	cfg.CreateSchemaIfMissing = true
 	cfg.CacheSize = 100
 
-	sm, err := NewSessionManager(cfg, pgConnString)
+	sm, err := NewSessionManager(cfg, db)
 	require.NoError(t, err)
 	defer sm.Shutdown(context.Background())
 
@@ -1189,7 +1189,7 @@ func TestGetAttributeAndRetainUnmarshaled(t *testing.T) {
 	ctx := context.Background()
 
 	// Start PostgreSQL container
-	postgres, pgConnString, err := startPostgresContainer(ctx)
+	postgres, db, _, err := startPostgresContainer(ctx)
 	require.NoError(t, err)
 	defer postgres.Terminate(ctx)
 
@@ -1198,7 +1198,7 @@ func TestGetAttributeAndRetainUnmarshaled(t *testing.T) {
 	cfg.CreateSchemaIfMissing = true
 	cfg.CacheSize = 100
 
-	sm, err := NewSessionManager(cfg, pgConnString)
+	sm, err := NewSessionManager(cfg, db)
 	require.NoError(t, err)
 	defer sm.Shutdown(context.Background())
 
@@ -1338,7 +1338,7 @@ func TestSessionManagerResilience(t *testing.T) {
 	ctx := context.Background()
 
 	// Start PostgreSQL container
-	postgres, pgConnString, err := startPostgresContainer(ctx)
+	postgres, db, pgConnString, err := startPostgresContainer(ctx)
 	require.NoError(t, err)
 	defer postgres.Terminate(ctx)
 
@@ -1348,7 +1348,7 @@ func TestSessionManagerResilience(t *testing.T) {
 	cfg.CacheSize = 100
 	cfg.NotifyOnUpdates = true
 
-	sm, err := NewSessionManager(cfg, pgConnString)
+	sm, err := NewSessionManager(cfg, db)
 	require.NoError(t, err)
 	defer sm.Shutdown(context.Background())
 
@@ -1363,16 +1363,16 @@ func TestSessionManagerResilience(t *testing.T) {
 	// Simulate PostgreSQL dropping all connections
 	t.Run("HandleConnectionDrop", func(t *testing.T) {
 		// Create a new connection to execute the termination command
-		db, err := sqlx.Connect("pgx", pgConnString)
+		terminateDB, err := sql.Open("pgx", pgConnString)
 		require.NoError(t, err)
-		defer db.Close()
+		defer terminateDB.Close()
 
 		// Force disconnect all clients except our current connection
-		_, err = db.Exec("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE pid <> pg_backend_pid()")
+		_, err = terminateDB.Exec("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE pid <> pg_backend_pid()")
 		require.NoError(t, err)
 
-		// Close our connection too
-		db.Close()
+		// Close our termination connection
+		terminateDB.Close()
 
 		// Wait a bit for the SessionManager to detect the disconnection and re-establish the connection
 		time.Sleep(5 * time.Second)
@@ -1387,7 +1387,7 @@ func TestSessionManagerResilience(t *testing.T) {
 	// Test out-of-sync scenario
 	t.Run("HandleOutOfSync", func(t *testing.T) {
 		// Update the session directly in the database
-		_, err = sm.db.ExecContext(ctx, fmt.Sprintf(`
+		_, err = db.ExecContext(ctx, fmt.Sprintf(`
 			UPDATE %s
 			SET "updated_at" = NOW(), "version" = "version" + 1
 			WHERE "id" = $1
@@ -1395,7 +1395,7 @@ func TestSessionManagerResilience(t *testing.T) {
 		require.NoError(t, err)
 
 		// Update an attribute directly in the database
-		_, err = sm.db.ExecContext(ctx, fmt.Sprintf(`
+		_, err = db.ExecContext(ctx, fmt.Sprintf(`
 			UPDATE %s
 			SET "value" = 'updated_value'
 			WHERE "session_id" = $1 AND "key" = 'key'
@@ -1403,16 +1403,16 @@ func TestSessionManagerResilience(t *testing.T) {
 		require.NoError(t, err)
 
 		// Create a new connection to execute the termination command
-		db, err := sqlx.Connect("pgx", pgConnString)
+		terminateDB, err := sql.Open("pgx", pgConnString)
 		require.NoError(t, err)
-		defer db.Close()
+		defer terminateDB.Close()
 
 		// Force disconnect all clients except our current connection
-		_, err = db.Exec("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE pid <> pg_backend_pid()")
+		_, err = terminateDB.Exec("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE pid <> pg_backend_pid()")
 		require.NoError(t, err)
 
-		// Close our connection too
-		db.Close()
+		// Close our termination connection
+		terminateDB.Close()
 
 		// Wait a bit for the SessionManager to detect the disconnection and re-establish the connection
 		time.Sleep(5 * time.Second)
@@ -1433,7 +1433,7 @@ func TestSessionManagerResilience(t *testing.T) {
 		sm.mutex.RUnlock()
 	})
 }
-func startPostgresContainer(ctx context.Context) (testcontainers.Container, string, error) {
+func startPostgresContainer(ctx context.Context) (testcontainers.Container, *sql.DB, string, error) {
 	req := testcontainers.ContainerRequest{
 		Image:        "postgres:13",
 		ExposedPorts: []string{"5432/tcp"},
@@ -1454,17 +1454,17 @@ func startPostgresContainer(ctx context.Context) (testcontainers.Container, stri
 		Started:          true,
 	})
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to start postgres container: %v", err)
+		return nil, nil, "", fmt.Errorf("failed to start postgres container: %v", err)
 	}
 
 	host, err := postgres.Host(ctx)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to get postgres host: %v", err)
+		return nil, nil, "", fmt.Errorf("failed to get postgres host: %v", err)
 	}
 
 	port, err := postgres.MappedPort(ctx, "5432")
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to get postgres port: %v", err)
+		return nil, nil, "", fmt.Errorf("failed to get postgres port: %v", err)
 	}
 
 	pgConnString := fmt.Sprintf("host=%s port=%d user=test_user password=test_password dbname=test_db sslmode=disable", host, port.Int())
@@ -1472,21 +1472,21 @@ func startPostgresContainer(ctx context.Context) (testcontainers.Container, stri
 	log.Printf("Attempting to connect with: %s", pgConnString)
 
 	// Attempt to connect with retries
-	var db *sqlx.DB
+	var db *sql.DB
 	err = retry(ctx, 30*time.Second, func() error {
 		var err error
-		db, err = sqlx.Connect("pgx", pgConnString)
+		db, err = sql.Open("pgx", pgConnString)
 		if err != nil {
 			log.Printf("Failed to connect, retrying: %v", err)
 			return err
 		}
-		return nil
+		db.SetMaxOpenConns(200)
+		return db.Ping()
 	})
 
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to connect to database after retries: %v", err)
+		return nil, nil, "", fmt.Errorf("failed to connect to database after retries: %v", err)
 	}
-	defer db.Close()
 
 	// Verify max_connections setting
 	var maxConnections int
@@ -1497,7 +1497,7 @@ func startPostgresContainer(ctx context.Context) (testcontainers.Container, stri
 		log.Printf("max_connections is set to: %d", maxConnections)
 	}
 
-	return postgres, pgConnString, nil
+	return postgres, db, pgConnString, nil
 }
 
 func retry(ctx context.Context, maxWait time.Duration, fn func() error) error {
@@ -1526,7 +1526,7 @@ func TestCheckAttributeVersion(t *testing.T) {
 	ctx := context.Background()
 
 	// Start PostgreSQL container
-	postgres, pgConnString, err := startPostgresContainer(ctx)
+	postgres, db, _, err := startPostgresContainer(ctx)
 	require.NoError(t, err)
 	defer postgres.Terminate(ctx)
 
@@ -1535,7 +1535,7 @@ func TestCheckAttributeVersion(t *testing.T) {
 	cfg.CreateSchemaIfMissing = true
 	cfg.CacheSize = 100
 
-	sm, err := NewSessionManager(cfg, pgConnString)
+	sm, err := NewSessionManager(cfg, db)
 	require.NoError(t, err)
 	defer sm.Shutdown(context.Background())
 

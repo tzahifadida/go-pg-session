@@ -19,7 +19,7 @@ func BenchmarkConcurrentGetSession(b *testing.B) {
 	ctx := context.Background()
 
 	// Start PostgreSQL container
-	postgres, pgConnString, err := startPostgresContainer(ctx)
+	postgres, pgConnString, _, err := startPostgresContainer(ctx)
 	require.NoError(b, err)
 	defer postgres.Terminate(ctx)
 
@@ -86,7 +86,7 @@ func BenchmarkConcurrentUpdateSession(b *testing.B) {
 	ctx := context.Background()
 
 	// Start PostgreSQL container
-	postgres, pgConnString, err := startPostgresContainer(ctx)
+	postgres, pgConnString, _, err := startPostgresContainer(ctx)
 	require.NoError(b, err)
 	defer postgres.Terminate(ctx)
 
@@ -223,7 +223,7 @@ func BenchmarkSessionManagers(b *testing.B) {
 	ctx := context.Background()
 
 	// Start PostgreSQL container
-	postgres, pgConnString, err := startPostgresContainer(ctx)
+	postgres, pgConnString, _, err := startPostgresContainer(ctx)
 	require.NoError(b, err)
 	defer postgres.Terminate(ctx)
 

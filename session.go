@@ -79,16 +79,6 @@ type Config struct {
 
 	// CustomPGLN is an optional custom PGLN instance. If not supplied, a new one will be created with defaults.
 	CustomPGLN *pgln.PGListenNotify `json:"-"`
-
-	//Sessions database connections settings
-	// zero means default driver; negative means 0
-	MaxIdleConnections int
-	// <= 0 means unlimited
-	MaxOpenConnections int
-	// maximum amount of time a connection may be reused
-	ConnectionsMaxLifetime time.Duration
-	// maximum amount of time a connection may be idle before being closed
-	ConnectionsMaxIdleTime time.Duration
 }
 
 // DefaultConfig returns a Config struct with default values.
@@ -107,11 +97,6 @@ func DefaultConfig() *Config {
 		LastAccessUpdateBatchSize: 5000,
 		NotifyOnUpdates:           true,
 		NotifyOnFailedUpdates:     false,
-		// let's not risk it, your driver will simply fail if you don't increase it on the database side.
-		MaxOpenConnections:     30,
-		MaxIdleConnections:     0,
-		ConnectionsMaxLifetime: 0,
-		ConnectionsMaxIdleTime: 0,
 	}
 }
 
@@ -191,11 +176,11 @@ type GetSessionOptions struct {
 //
 // Parameters:
 //   - cfg: A pointer to a Config struct containing the configuration options for the SessionManager.
-//   - pgxConnectionString: A string representing the PostgreSQL connection string.
+//   - db: An pgx (v5) stdlib
 //
 // Returns:
 //   - A pointer to the created SessionManager and an error if any occurred during initialization.
-func NewSessionManager(cfg *Config, pgxConnectionString string) (*SessionManager, error) {
+func NewSessionManager(cfg *Config, db *sql.DB) (*SessionManager, error) {
 	if cfg == nil {
 		cfg = DefaultConfig()
 	} else {
@@ -226,23 +211,7 @@ func NewSessionManager(cfg *Config, pgxConnectionString string) (*SessionManager
 		}
 	}
 
-	sqlxDB, err := sqlx.Open("pgx", pgxConnectionString)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open database connection: %v", err)
-	}
-
-	if cfg.MaxOpenConnections > 0 {
-		sqlxDB.SetMaxOpenConns(cfg.MaxOpenConnections)
-	}
-	if cfg.MaxIdleConnections > 0 {
-		sqlxDB.SetMaxIdleConns(cfg.MaxIdleConnections)
-	}
-	if cfg.ConnectionsMaxLifetime > 5*time.Second {
-		sqlxDB.SetConnMaxLifetime(cfg.ConnectionsMaxLifetime)
-	}
-	if cfg.ConnectionsMaxIdleTime > 1*time.Second {
-		sqlxDB.SetConnMaxIdleTime(cfg.ConnectionsMaxIdleTime)
-	}
+	sqlxDB := sqlx.NewDb(db, "pgx")
 
 	nodeID, err := uuid.NewRandom()
 	if err != nil {
@@ -270,8 +239,8 @@ func NewSessionManager(cfg *Config, pgxConnectionString string) (*SessionManager
 	} else {
 		builder := pgln.NewPGListenNotifyBuilder().
 			SetContext(context.Background()).
-			SetReconnectInterval(5000).
-			UseConnectionString(pgxConnectionString)
+			SetReconnectInterval(1 * time.Second).
+			SetDB(db)
 
 		sm.pgln, err = builder.Build()
 		if err != nil {
@@ -288,7 +257,10 @@ func NewSessionManager(cfg *Config, pgxConnectionString string) (*SessionManager
 	err = sm.pgln.ListenAndWaitForListening(channelName, pgln.ListenOptions{
 		NotificationCallback: sm.handleNotification,
 		ErrorCallback: func(channel string, err error) {
-			log.Printf("PGLN error on channel %s: %v", channel, err)
+			log.Printf("Warning PGLN error (this may be fine if your loadbalancer or db connection lifetime is preset) on channel %s: %v", channel, err)
+			sm.mutex.Lock()
+			sm.outOfSync = true
+			sm.mutex.Unlock()
 		},
 		OutOfSyncBlockingCallback: sm.handleOutOfSync,
 	})
@@ -1712,9 +1684,7 @@ func (sm *SessionManager) Shutdown(ctx context.Context) error {
 		sm.pgln.Shutdown()
 	}
 
-	if err := sm.db.Close(); err != nil {
-		return fmt.Errorf("failed to close database connection: %v", err)
-	}
+	// We don't close the db connection here anymore, as it's managed externally
 
 	return nil
 }
