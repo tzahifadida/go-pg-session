@@ -140,12 +140,11 @@ type Session struct {
 	UpdatedAt    time.Time `db:"updated_at"`
 	Version      int       `db:"version"`
 
-	attributes        map[string]SessionAttributeValue
-	attributeVersions map[string]int
-	changed           map[string]bool
-	deleted           map[string]bool
-	sm                *SessionManager
-	fromCache         bool
+	attributes map[string]SessionAttributeValue
+	changed    map[string]bool
+	deleted    map[string]bool
+	sm         *SessionManager
+	fromCache  bool
 }
 
 // IsFromCache returns true if the session was loaded from the cache,
@@ -423,7 +422,7 @@ func (sm *SessionManager) CreateSession(ctx context.Context, userID uuid.UUID, a
 		return nil, fmt.Errorf("failed to insert session: %v", err)
 	}
 
-	session.attributeVersions = make(map[string]int)
+	attributeVersions := make(map[string]int)
 	for key, attr := range attributes {
 		var marshaledValue string
 		if attr.Marshaled {
@@ -450,7 +449,13 @@ func (sm *SessionManager) CreateSession(ctx context.Context, userID uuid.UUID, a
 		if err != nil {
 			return nil, fmt.Errorf("failed to insert session attribute: %v", err)
 		}
-		session.attributeVersions[key] = 1
+		attributeVersions[key] = 1
+	}
+
+	for key, version := range attributeVersions {
+		attr := session.attributes[key]
+		attr.Version = version
+		session.attributes[key] = attr
 	}
 
 	sm.addOrUpdateCache(session)
@@ -462,7 +467,7 @@ func (sm *SessionManager) CreateSession(ctx context.Context, userID uuid.UUID, a
 
 	go sm.enforceMaxSessions(ctx, userID)
 
-	return session, nil
+	return session.deepCopy(), nil
 }
 
 // SessionOption is a function type that modifies GetSessionOptions
@@ -619,6 +624,7 @@ func WithDoNotNotify() UpdateSessionOption {
 // Returns:
 //   - A pointer to the updated Session and an error if any occurred during the update.
 func (sm *SessionManager) UpdateSession(ctx context.Context, session *Session, options ...UpdateSessionOption) (*Session, error) {
+	session = session.deepCopy()
 	opts := UpdateSessionOptions{}
 	for _, option := range options {
 		option(&opts)
@@ -648,7 +654,7 @@ func (sm *SessionManager) UpdateSession(ctx context.Context, session *Session, o
 			var args []interface{}
 
 			if opts.CheckAttributeVersion {
-				if session.attributeVersions[key] < 0 {
+				if attr.Version < 0 {
 					// Insert new attribute
 					query = fmt.Sprintf(`
 						INSERT INTO %s ("session_id", "key", "value", "expires_at", "version")
@@ -664,7 +670,7 @@ func (sm *SessionManager) UpdateSession(ctx context.Context, session *Session, o
 						WHERE "session_id" = $3 AND "key" = $4 AND "version" = $5
 						RETURNING "version"
 					`, sm.getTableName("session_attributes"))
-					args = []interface{}{marshaledValue, attr.ExpiresAt, session.ID, key, session.attributeVersions[key]}
+					args = []interface{}{marshaledValue, attr.ExpiresAt, session.ID, key, attr.Version}
 				}
 			} else {
 				// Original upsert logic
@@ -690,7 +696,8 @@ func (sm *SessionManager) UpdateSession(ctx context.Context, session *Session, o
 				return nil, fmt.Errorf("failed to update session attribute: %v", err)
 			}
 
-			session.attributeVersions[key] = newVersion
+			attr.Version = newVersion
+			session.attributes[key] = attr
 		}
 	}
 
@@ -714,10 +721,6 @@ func (sm *SessionManager) UpdateSession(ctx context.Context, session *Session, o
 		_, err = tx.ExecContext(ctx, query, args...)
 		if err != nil {
 			return nil, fmt.Errorf("failed to delete session attributes: %v", err)
-		}
-
-		for key := range session.deleted {
-			delete(session.attributeVersions, key)
 		}
 	}
 
@@ -781,7 +784,6 @@ func (sm *SessionManager) UpdateSession(ctx context.Context, session *Session, o
 	updatedSession.attributes = session.attributes
 	updatedSession.changed = make(map[string]bool)
 	updatedSession.deleted = make(map[string]bool)
-	updatedSession.attributeVersions = session.attributeVersions
 	updatedSession.sm = sm
 
 	err = tx.Commit()
@@ -789,7 +791,17 @@ func (sm *SessionManager) UpdateSession(ctx context.Context, session *Session, o
 		return nil, fmt.Errorf("failed to commit transaction: %v", err)
 	}
 
-	sm.addOrUpdateCache(&updatedSession)
+	if updatedSession.Version == session.Version+1 {
+		deepCopy := updatedSession.deepCopy()
+		sm.addOrUpdateCache(deepCopy)
+	} else {
+		sm.mutex.Lock()
+		if item, exists := sm.cache[updatedSession.ID]; exists {
+			sm.lru.Remove(item.element)
+			delete(sm.cache, updatedSession.ID)
+		}
+		sm.mutex.Unlock()
+	}
 
 	return &updatedSession, nil
 }
@@ -977,7 +989,6 @@ func (sm *SessionManager) listAttributes(ctx context.Context, sessionID uuid.UUI
 	defer rows.Close()
 
 	attributes := make(map[string]SessionAttributeValue)
-	attributeVersions := make(map[string]int)
 	for rows.Next() {
 		var key, value string
 		var expiresAt *time.Time
@@ -986,8 +997,7 @@ func (sm *SessionManager) listAttributes(ctx context.Context, sessionID uuid.UUI
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan attribute row: %v", err)
 		}
-		attributes[key] = SessionAttributeValue{Value: value, ExpiresAt: expiresAt, Marshaled: true}
-		attributeVersions[key] = version
+		attributes[key] = SessionAttributeValue{Value: value, ExpiresAt: expiresAt, Marshaled: true, Version: version}
 	}
 
 	return attributes, nil
@@ -1184,10 +1194,14 @@ func (s *Session) UpdateAttribute(key string, value interface{}, expiresAt *time
 		return fmt.Errorf("attribute value for key %s exceeds max length of %d", key, s.sm.Config.MaxAttributeLength)
 	}
 
-	if _, ok := s.attributes[key]; !ok {
-		s.attributeVersions[key] = -1 // insert attribute and createsession starts at 1 so to avoid collisions, new attributes should be -1 to fail on update.
+	attr := SessionAttributeValue{Value: value, ExpiresAt: expiresAt, Marshaled: false}
+	if existing, ok := s.attributes[key]; !ok {
+		// insert attribute and createsession starts at 1 so to avoid collisions, new attributes should be -1 to fail on update.
+		attr.Version = -1
+	} else {
+		attr.Version = existing.Version
 	}
-	s.attributes[key] = SessionAttributeValue{Value: value, ExpiresAt: expiresAt, Marshaled: false}
+	s.attributes[key] = attr
 	s.changed[key] = true
 	return nil
 }
@@ -1282,6 +1296,7 @@ func (s *Session) GetAttributeAndRetainUnmarshaled(key string, v interface{}) (S
 		Value:     unmarshaledValue,
 		ExpiresAt: attr.ExpiresAt,
 		Marshaled: false,
+		Version:   attr.Version,
 	}
 
 	s.attributes[key] = unmarshaled
@@ -1337,24 +1352,18 @@ func (s *Session) deepCopy() *Session {
 		copiedDeleted[k] = v
 	}
 
-	copiedAttributeVersions := make(map[string]int, len(s.attributeVersions))
-	for k, v := range s.attributeVersions {
-		copiedAttributeVersions[k] = v
-	}
-
 	return &Session{
-		ID:                s.ID,
-		UserID:            s.UserID,
-		LastAccessed:      s.LastAccessed,
-		ExpiresAt:         s.ExpiresAt,
-		UpdatedAt:         s.UpdatedAt,
-		Version:           s.Version,
-		attributes:        copiedAttributes,
-		attributeVersions: copiedAttributeVersions,
-		changed:           copiedChanged,
-		deleted:           copiedDeleted,
-		sm:                s.sm,
-		fromCache:         s.fromCache,
+		ID:           s.ID,
+		UserID:       s.UserID,
+		LastAccessed: s.LastAccessed,
+		ExpiresAt:    s.ExpiresAt,
+		UpdatedAt:    s.UpdatedAt,
+		Version:      s.Version,
+		attributes:   copiedAttributes,
+		changed:      copiedChanged,
+		deleted:      copiedDeleted,
+		sm:           s.sm,
+		fromCache:    s.fromCache,
 	}
 }
 

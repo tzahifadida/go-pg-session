@@ -97,7 +97,7 @@ func TestDistributedLockConcurrent(t *testing.T) {
 		resource := "extend-resource"
 		config := &DistributedLockConfig{
 			LeaseTime:         2 * time.Second,
-			HeartbeatInterval: 11500 * time.Millisecond,
+			HeartbeatInterval: 100 * time.Millisecond,
 		}
 
 		lock := sm.NewDistributedLock(session.ID, resource, config)
@@ -121,7 +121,7 @@ func TestDistributedLockConcurrent(t *testing.T) {
 			}
 		}()
 
-		// Goroutine to try acquiring the lock
+		//Goroutine to try acquiring the lock
 		acquireErrors := make(chan error, 5)
 		go func() {
 			defer wg.Done()

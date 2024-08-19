@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -184,7 +185,6 @@ func TestReadmeExamples(t *testing.T) {
 		assert.Equal(t, "light", updatedPreferences["theme"])
 	})
 
-	// In the TestReadmeExamples function, update the AddToCartHandler test:
 	t.Run("AddToCartHandler", func(t *testing.T) {
 		handler := addToCartHandler(sessionManager)
 
@@ -361,6 +361,158 @@ func TestSignedCookiesExample(t *testing.T) {
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "invalid session signature")
 	})
+}
+
+func TestDistributedLockExamples(t *testing.T) {
+	// Setup
+	ctx := context.Background()
+	postgres, pgConnString, err := startPostgresContainer(ctx)
+	require.NoError(t, err)
+	defer postgres.Terminate(ctx)
+
+	cfg := DefaultConfig()
+	cfg.CreateSchemaIfMissing = true
+
+	sessionManager, err := NewSessionManager(cfg, pgConnString)
+	require.NoError(t, err)
+	defer sessionManager.Shutdown(context.Background())
+
+	t.Run("BasicLockUsage", func(t *testing.T) {
+		userID := uuid.New()
+		session, err := sessionManager.CreateSession(ctx, userID, nil)
+		require.NoError(t, err)
+
+		lock := sessionManager.NewDistributedLock(session.ID, "critical-operation", nil)
+
+		err = lock.Lock(ctx)
+		require.NoError(t, err)
+
+		// Simulate critical operation
+		time.Sleep(100 * time.Millisecond)
+
+		err = lock.Unlock(ctx)
+		require.NoError(t, err)
+	})
+
+	t.Run("CustomLockConfiguration", func(t *testing.T) {
+		userID := uuid.New()
+		session, err := sessionManager.CreateSession(ctx, userID, nil)
+		require.NoError(t, err)
+
+		config := &DistributedLockConfig{
+			MaxRetries:        5,
+			RetryDelay:        100 * time.Millisecond,
+			HeartbeatInterval: 1 * time.Second,
+			LeaseTime:         5 * time.Second,
+		}
+
+		lock := sessionManager.NewDistributedLock(session.ID, "custom-lock", config)
+
+		err = lock.Lock(ctx)
+		require.NoError(t, err)
+
+		// Simulate operation
+		time.Sleep(200 * time.Millisecond)
+
+		err = lock.Unlock(ctx)
+		require.NoError(t, err)
+	})
+
+	t.Run("ExtendingLease", func(t *testing.T) {
+		userID := uuid.New()
+		session, err := sessionManager.CreateSession(ctx, userID, nil)
+		require.NoError(t, err)
+
+		config := &DistributedLockConfig{
+			LeaseTime: 2 * time.Second,
+		}
+
+		lock := sessionManager.NewDistributedLock(session.ID, "extend-lease-lock", config)
+
+		err = lock.Lock(ctx)
+		require.NoError(t, err)
+
+		// Simulate long-running operation
+		for i := 0; i < 3; i++ {
+			time.Sleep(1 * time.Second)
+			err = lock.ExtendLease(ctx, 2*time.Second)
+			require.NoError(t, err)
+		}
+
+		err = lock.Unlock(ctx)
+		require.NoError(t, err)
+	})
+
+	t.Run("HandlingLockAcquisitionFailures", func(t *testing.T) {
+		userID := uuid.New()
+		session, err := sessionManager.CreateSession(ctx, userID, nil)
+		require.NoError(t, err)
+
+		lock1 := sessionManager.NewDistributedLock(session.ID, "conflicting-lock", nil)
+		lock2 := sessionManager.NewDistributedLock(session.ID, "conflicting-lock", nil)
+
+		err = lock1.Lock(ctx)
+		require.NoError(t, err)
+
+		err = lock2.Lock(ctx)
+		assert.Error(t, err)
+		assert.True(t, errors.Is(err, ErrLockAlreadyHeld))
+
+		err = lock1.Unlock(ctx)
+		require.NoError(t, err)
+	})
+
+	t.Run("ConcurrentLockAttempts", func(t *testing.T) {
+		userID := uuid.New()
+		session, err := sessionManager.CreateSession(ctx, userID, nil)
+		require.NoError(t, err)
+
+		var wg sync.WaitGroup
+		successCount := 0
+		attemptCount := 5
+		var mu sync.Mutex
+
+		for i := 0; i < attemptCount; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				lock := sessionManager.NewDistributedLock(session.ID, "concurrent-lock", nil)
+				err := lock.Lock(ctx)
+				if err == nil {
+					mu.Lock()
+					successCount++
+					mu.Unlock()
+					time.Sleep(100 * time.Millisecond)
+					lock.Unlock(ctx)
+				}
+			}()
+		}
+
+		wg.Wait()
+		assert.Equal(t, 1, successCount, "Only one goroutine should have acquired the lock")
+	})
+}
+
+func TestPerformCriticalOperation(t *testing.T) {
+	// Setup
+	ctx := context.Background()
+	postgres, pgConnString, err := startPostgresContainer(ctx)
+	require.NoError(t, err)
+	defer postgres.Terminate(ctx)
+
+	cfg := DefaultConfig()
+	cfg.CreateSchemaIfMissing = true
+
+	sessionManager, err := NewSessionManager(cfg, pgConnString)
+	require.NoError(t, err)
+	defer sessionManager.Shutdown(context.Background())
+
+	userID := uuid.New()
+	session, err := sessionManager.CreateSession(ctx, userID, nil)
+	require.NoError(t, err)
+
+	err = performCriticalOperation(sessionManager, session.ID)
+	require.NoError(t, err)
 }
 
 // Handler implementations
@@ -684,6 +836,21 @@ func getSessionWithSignedCookie(sm *SessionManager, signerPool *HMACSHA256Signer
 
 	// Retrieve the session
 	return sm.GetSession(r.Context(), sessionID)
+}
+
+func performCriticalOperation(sm *SessionManager, sessionID uuid.UUID) error {
+	lock := sm.NewDistributedLock(sessionID, "critical-operation", nil)
+
+	err := lock.Lock(context.Background())
+	if err != nil {
+		return fmt.Errorf("failed to acquire lock: %w", err)
+	}
+	defer lock.Unlock(context.Background())
+
+	// Simulate critical operation
+	time.Sleep(100 * time.Millisecond)
+
+	return nil
 }
 
 // startPostgresContainer function should be implemented here or imported from your test utilities

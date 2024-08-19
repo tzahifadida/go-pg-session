@@ -6,6 +6,21 @@
 
 If you find this project helpful, please give it a star on GitHub! Your support is greatly appreciated.
 
+## Table of Contents
+
+- [Background](#background)
+- [Features](#features)
+- [Benchmark Results](#benchmark-results)
+- [Installation](#installation)
+- [Configuration](#configuration)
+- [Usage Examples](#usage-examples)
+- [Choosing Between CheckVersion and CheckAttributeVersion](#choosing-between-checkVersion-and-checkAttributeVersion)
+- [Distributed Locks](#distributed-locks)
+- [Performance Considerations](#performance-considerations)
+- [Exported Functions and Configuration](#exported-functions-and-configuration)
+- [Contributing](#contributing)
+- [License](#license)
+
 ## Background
 
 The `go-pg-session` library was created with the goal of combining the speed of JWTs with the simplicity and security of a backend session library. Recognizing that sessions are typically slow to change per user and are mainly read rather than written, this library implements an eventually consistent memory caching strategy on each node.
@@ -44,6 +59,7 @@ This approach offers a hybrid solution that leverages the benefits of both cooki
     - **Session-Level Versioning**: Supports version-based optimistic locking for entire sessions.
     - **Attribute-Level Versioning**: Option to check versions of individual session attributes, providing fine-grained control over concurrent modifications.
 - **Attribute-Level Expiration**: Individual session attributes can have their own expiration times, providing fine-grained control over data lifecycle.
+- **Distributed Locks**: Provides a mechanism for coordinating access to shared resources across multiple nodes.
 
 ### Attribute-Level Expiration: A Powerful Feature
 
@@ -366,127 +382,6 @@ func logoutHandler(sm *gopgsession.SessionManager) http.HandlerFunc {
 }
 ```
 
-### Example with Session-Level Version Checking
-
-This example demonstrates how to use session-level version checking with `WithCheckVersion()`:
-
-```go
-func updateUserSession(sm *gopgsession.SessionManager) http.HandlerFunc {
-    return func(w http.ResponseWriter, r *http.Request) {
-        sessionID, _ := uuid.Parse(r.Cookie("session_id").Value)
-
-        maxRetries := 3
-        for attempt := 0; attempt < maxRetries; attempt++ {
-            session, err := sm.GetSession(r.Context(), sessionID)
-            if err != nil {
-                http.Error(w, "Failed to retrieve session", http.StatusInternalServerError)
-                return
-            }
-
-            // Update multiple session attributes
-            err = session.UpdateAttribute("last_access", time.Now(), nil)
-            if err != nil {
-                http.Error(w, "Failed to update last access", http.StatusInternalServerError)
-                return
-            }
-
-            err = session.UpdateAttribute("page_views", session.GetAttributes()["page_views"].(int) + 1, nil)
-            if err != nil {
-                http.Error(w, "Failed to update page views", http.StatusInternalServerError)
-                return
-            }
-
-            // Try to update with session version check
-            _, err = sm.UpdateSession(r.Context(), session, gopgsession.WithCheckVersion())
-            if err == gopgsession.ErrSessionVersionIsOutdated {
-                // Version conflict, retry
-                continue
-            }
-            if err != nil {
-                http.Error(w, "Failed to save session", http.StatusInternalServerError)
-                return
-            }
-
-            // Success
-            w.WriteHeader(http.StatusOK)
-            w.Write([]byte("Session updated successfully"))
-            return
-        }
-
-        http.Error(w, "Failed to update session after max retries", http.StatusConflict)
-    }
-}
-```
-
-### Example with Attribute-Level Version Checking
-
-This example demonstrates how to use attribute-level version checking with `WithCheckAttributeVersion()`:
-
-```go
-func updateUserPreferences(sm *gopgsession.SessionManager) http.HandlerFunc {
-    return func(w http.ResponseWriter, r *http.Request) {
-        sessionID, _ := uuid.Parse(r.Cookie("session_id").Value)
-        newTheme := r.FormValue("theme")
-
-        maxRetries := 3
-        for attempt := 0; attempt < maxRetries; attempt++ {
-            var session *gopgsession.Session
-            var err error
-
-            if attempt == 0 {
-                // On first attempt, use regular GetSession
-                session, err = sm.GetSession(r.Context(), sessionID)
-            } else {
-                // On retry, force refresh to get the latest version
-                session, err = sm.GetSession(r.Context(), sessionID, gopgsession.WithForceRefresh())
-            }
-
-            if err != nil {
-                http.Error(w, "Failed to retrieve session", http.StatusInternalServerError)
-                return
-            }
-
-            // Place for user business logic
-            var preferences map[string]string
-            _, err = session.GetAttributeAndRetainUnmarshaled("preferences", &preferences)
-            if err != nil {
-                http.Error(w, "Failed to get preferences", http.StatusInternalServerError)
-                return
-            }
-
-            // Update preferences
-            preferences["theme"] = newTheme
-            // ... other preference updates ...
-
-            // Update the preferences attribute
-            err = session.UpdateAttribute("preferences", preferences, nil)
-            if err != nil {
-                http.Error(w, "Failed to update preferences", http.StatusInternalServerError)
-                return
-            }
-
-            // Try to update with attribute version checks
-            _, err = sm.UpdateSession(r.Context(), session, gopgsession.WithCheckAttributeVersion())
-            if err != nil {
-                if err.Error() == "attribute preferences version mismatch" {
-                    // Specific attribute version conflict, retry
-                    continue
-                }
-                http.Error(w, "Failed to save session", http.StatusInternalServerError)
-                return
-            }
-
-            // Success
-            w.WriteHeader(http.StatusOK)
-            w.Write([]byte("Preferences updated successfully"))
-            return
-        }
-
-        http.Error(w, "Failed to update preferences after max retries", http.StatusConflict)
-    }
-}
-```
-
 ### Concurrent Updates Example
 
 Here's a refined example of handling concurrent updates to a session, useful for scenarios like a shopping cart:
@@ -657,6 +552,139 @@ Choose the appropriate version checking method based on your specific use case:
 
 Remember, you should choose either `WithCheckVersion()` or `WithCheckAttributeVersion()`, not both, as `WithCheckVersion()` implicitly checks all attribute versions as well.
 
+## Distributed Locks
+
+The `go-pg-session` library provides a distributed locking mechanism that allows you to coordinate access to shared resources across multiple nodes in a distributed system. This feature is particularly useful for scenarios where you need to ensure that only one process or node can access or modify a specific resource at a time.
+
+### Key Features
+
+- Lease-based locking with automatic expiration
+- Heartbeat mechanism to maintain locks
+- Configurable retry and timeout settings
+- Support for extending lock lease time
+
+### Use Cases
+
+- Coordinating access to shared resources in a distributed system
+- Implementing distributed cron jobs or scheduled tasks
+- Ensuring single-writer scenarios in multi-node deployments
+- Preventing race conditions in distributed workflows
+
+### Basic Usage
+
+Here's a basic example of how to use the distributed lock:
+
+```go
+func performCriticalOperation(sm *gopgsession.SessionManager, sessionID uuid.UUID) error {
+    // Create a new distributed lock
+    lock := sm.NewDistributedLock(sessionID, "critical-operation", nil)
+
+    // Attempt to acquire the lock
+    err := lock.Lock(context.Background())
+    if err != nil {
+        return fmt.Errorf("failed to acquire lock: %w", err)
+    }
+    defer lock.Unlock(context.Background())
+
+    // Perform your critical operation here
+    // ...
+
+    return nil
+}
+```
+
+### Advanced Usage
+
+#### Custom Configuration
+
+You can customize the lock behavior by providing a `DistributedLockConfig`:
+
+```go
+config := &gopgsession.DistributedLockConfig{
+    MaxRetries:        5,
+    RetryDelay:        100 * time.Millisecond,
+    HeartbeatInterval: 5 * time.Second,
+    LeaseTime:         30 * time.Second,
+}
+
+lock := sm.NewDistributedLock(sessionID, "custom-lock", config)
+```
+
+#### Extending Lease Time
+
+If your operation takes longer than expected, you can extend the lease time:
+
+```go
+func longRunningOperation(sm *gopgsession.SessionManager, sessionID uuid.UUID) error {
+    lock := sm.NewDistributedLock(sessionID, "long-operation", nil)
+
+    err := lock.Lock(context.Background())
+    if err != nil {
+        return fmt.Errorf("failed to acquire lock: %w", err)
+    }
+    defer lock.Unlock(context.Background())
+
+    // Start the operation
+    for {
+        // Do some work...
+
+        // Extend the lease if needed
+        err := lock.ExtendLease(context.Background(), 30*time.Second)
+        if err != nil {
+            return fmt.Errorf("failed to extend lease: %w", err)
+        }
+
+        // Check if the operation is complete
+        if isComplete() {
+            break
+        }
+    }
+
+    return nil
+}
+```
+
+#### Handling Lock Acquisition Failures
+
+In some cases, you might want to handle scenarios where the lock can't be acquired:
+
+```go
+func tryOperation(sm *gopgsession.SessionManager, sessionID uuid.UUID) error {
+    lock := sm.NewDistributedLock(sessionID, "try-operation", nil)
+
+    err := lock.Lock(context.Background())
+    if err != nil {
+        if errors.Is(err, gopgsession.ErrLockAlreadyHeld) {
+            // Handle the case where the lock is already held
+            return fmt.Errorf("operation already in progress")
+        }
+        return fmt.Errorf("failed to acquire lock: %w", err)
+    }
+    defer lock.Unlock(context.Background())
+
+    // Perform the operation
+    // ...
+
+    return nil
+}
+```
+
+### Best Practices
+
+1. **Always use deferred unlock**: Use `defer lock.Unlock(ctx)` immediately after acquiring the lock to ensure it's released even if there's a panic.
+
+2. **Use appropriate timeout**: Set a context timeout when acquiring locks to prevent indefinite waiting.
+
+3. **Handle errors properly**: Check for and handle all potential errors, including lock acquisition failures and unlock errors.
+
+4. **Use unique resource names**: Ensure that your resource names (second parameter in `NewDistributedLock`) are unique and descriptive for the operation you're protecting.
+
+5. **Minimize lock duration**: Keep the critical section as short as possible to reduce contention.
+
+6. **Consider using try-lock pattern**: In some scenarios, it might be better to fail fast if a lock can't be acquired immediately, rather than waiting.
+
+By using the distributed lock feature of `go-pg-session`, you can coordinate operations across multiple instances of your application, ensuring data consistency and preventing race conditions in distributed environments.
+
 ## Performance Considerations
 
 The distributed memory cache in `go-pg-session` provides excellent read performance, as most session retrievals will be served from memory. Write operations are managed efficiently through batched updates and PostgreSQL's NOTIFY mechanism.
@@ -804,14 +832,14 @@ Usage example:
 
 ```go
 var preferences struct {
-    Theme string `json:"theme"`
-    Language string `json:"language"`
+Theme string `json:"theme"`
+Language string `json:"language"`
 }
 
 attr, err := session.GetAttributeAndRetainUnmarshaled("preferences", &preferences)
 if err != nil {
-    log.Printf("Failed to get preferences: %v", err)
-    return
+log.Printf("Failed to get preferences: %v", err)
+return
 }
 
 log.Printf("User preferences: Theme=%s, Language=%s", preferences.Theme, preferences.Language)

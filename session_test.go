@@ -1563,7 +1563,7 @@ func TestCheckAttributeVersion(t *testing.T) {
 		attr, exists := updatedSession.GetAttribute("key1")
 		require.True(t, exists)
 		assert.Equal(t, "value2", attr.Value)
-		assert.Equal(t, 2, updatedSession.attributeVersions["key1"]) // Version should be incremented
+		assert.Equal(t, 2, attr.Version) // Version should be incremented
 	})
 
 	t.Run("ConcurrentAttributeUpdateFailure", func(t *testing.T) {
@@ -1618,17 +1618,17 @@ func TestCheckAttributeVersion(t *testing.T) {
 		attr1, exists := updatedSession.GetAttribute("key1")
 		require.True(t, exists)
 		assert.Equal(t, "new_value1", attr1.Value)
-		assert.Equal(t, 2, updatedSession.attributeVersions["key1"])
+		assert.Equal(t, 2, attr1.Version)
 
 		attr2, exists := updatedSession.GetAttribute("key2")
 		require.True(t, exists)
 		assert.Equal(t, "new_value2", attr2.Value)
-		assert.Equal(t, 2, updatedSession.attributeVersions["key2"])
+		assert.Equal(t, 2, attr2.Version)
 
 		attr3, exists := updatedSession.GetAttribute("key3")
 		require.True(t, exists)
 		assert.Equal(t, "new_value3", attr3.Value)
-		assert.Equal(t, 1, updatedSession.attributeVersions["key3"]) // New attribute, version should be 1
+		assert.Equal(t, 1, attr3.Version) // New attribute, version should be 1
 	})
 
 	t.Run("AttributeUpdateWithoutVersionCheck", func(t *testing.T) {
@@ -1660,6 +1660,6 @@ func TestCheckAttributeVersion(t *testing.T) {
 		attr, exists := updatedSession.GetAttribute("key1")
 		require.True(t, exists)
 		assert.Equal(t, "value3", attr.Value)
-		assert.Equal(t, 3, updatedSession.attributeVersions["key1"]) // Version should be incremented twice
+		assert.Equal(t, 3, attr.Version) // Version should be incremented twice
 	})
 }

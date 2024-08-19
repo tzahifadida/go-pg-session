@@ -119,7 +119,7 @@ func (dl *DistributedLock) Lock(ctx context.Context) error {
 	defer dl.mutex.Unlock()
 
 	for attempt := 0; attempt < dl.config.MaxRetries; attempt++ {
-		err := dl.attemptLock(ctx, attempt > 0)
+		err := dl.attemptLock(ctx, true)
 		if err == nil {
 			dl.leaseExpiration = dl.sm.clock.Now().Add(dl.config.LeaseTime)
 			dl.startHeartbeat(ctx)
