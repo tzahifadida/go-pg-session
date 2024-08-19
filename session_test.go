@@ -128,7 +128,7 @@ func TestSessionManager(t *testing.T) {
 	sm.setClock(fakeClock)
 
 	// Create HMAC signer pool
-	signerPool := NewHMACSHA256SignerPool("test_secret", 10)
+	signerPool := NewHMACSHA256SignerPool([]byte("test_secret"), 10)
 
 	// Test CreateSession
 	t.Run("CreateSession", func(t *testing.T) {
@@ -479,11 +479,11 @@ func TestSessionManager(t *testing.T) {
 
 		// Sign the session ID
 		encodedSessionID := sm.EncodeSessionIDAndVersion(session.ID, 1)
-		signature, err := signerPool.Sign(encodedSessionID)
+		encodedAndSigned, err := signerPool.SignAndEncode(encodedSessionID)
 		require.NoError(t, err)
 
 		// Verify the signature
-		isValid, decodedSessionID, err := signerPool.Verify(encodedSessionID, signature)
+		isValid, decodedSessionID, err := signerPool.VerifyAndDecode(encodedAndSigned)
 		require.NoError(t, err)
 		assert.True(t, isValid)
 		assert.Equal(t, encodedSessionID, decodedSessionID)
@@ -838,30 +838,29 @@ func TestHMACSHA256SignerPool(t *testing.T) {
 	maxPoolSize := 5
 
 	t.Run("SignAndVerify", func(t *testing.T) {
-		pool := NewHMACSHA256SignerPool(secret, maxPoolSize)
+		pool := NewHMACSHA256SignerPool([]byte(secret), maxPoolSize)
 		message := "test message"
 
-		signature, err := pool.Sign(message)
+		signature, err := pool.SignAndEncode(message)
 		require.NoError(t, err)
 
-		isValid, decodedMessage, err := pool.Verify(message, signature)
+		isValid, decodedMessage, err := pool.VerifyAndDecode(signature)
 		require.NoError(t, err)
 		assert.True(t, isValid)
 		assert.Equal(t, message, decodedMessage)
 	})
 
 	t.Run("InvalidSignature", func(t *testing.T) {
-		pool := NewHMACSHA256SignerPool(secret, maxPoolSize)
-		message := "test message"
+		pool := NewHMACSHA256SignerPool([]byte(secret), maxPoolSize)
 		invalidSignature := "invalid_signature"
 
-		isValid, _, err := pool.Verify(message, invalidSignature)
-		require.NoError(t, err)
+		isValid, _, err := pool.VerifyAndDecode(invalidSignature)
+		require.Error(t, err)
 		assert.False(t, isValid)
 	})
 
 	t.Run("ConcurrentUsage", func(t *testing.T) {
-		pool := NewHMACSHA256SignerPool(secret, maxPoolSize)
+		pool := NewHMACSHA256SignerPool([]byte(secret), maxPoolSize)
 		numGoroutines := 100
 		message := "test message"
 
@@ -871,10 +870,10 @@ func TestHMACSHA256SignerPool(t *testing.T) {
 		for i := 0; i < numGoroutines; i++ {
 			go func() {
 				defer wg.Done()
-				signature, err := pool.Sign(message)
+				signature, err := pool.SignAndEncode(message)
 				require.NoError(t, err)
 
-				isValid, decodedMessage, err := pool.Verify(message, signature)
+				isValid, decodedMessage, err := pool.VerifyAndDecode(signature)
 				require.NoError(t, err)
 				assert.True(t, isValid)
 				assert.Equal(t, message, decodedMessage)
@@ -967,7 +966,7 @@ func TestSignSessionID(t *testing.T) {
 	defer sm.Shutdown(context.Background())
 
 	// Create HMAC signer pool
-	signerPool := NewHMACSHA256SignerPool("test_secret", 10)
+	signerPool := NewHMACSHA256SignerPool([]byte("test_secret"), 10)
 
 	t.Run("SignAndVerifySessionID", func(t *testing.T) {
 		userID := uuid.New()
@@ -979,11 +978,11 @@ func TestSignSessionID(t *testing.T) {
 		require.NoError(t, err)
 
 		// Sign only the session ID
-		signature, err := signerPool.Sign(session.ID.String())
+		signature, err := signerPool.SignAndEncode(session.ID.String())
 		require.NoError(t, err)
 
 		// Verify the signature
-		isValid, decodedSessionID, err := signerPool.Verify(session.ID.String(), signature)
+		isValid, decodedSessionID, err := signerPool.VerifyAndDecode(signature)
 		require.NoError(t, err)
 		assert.True(t, isValid)
 		assert.Equal(t, session.ID.String(), decodedSessionID)

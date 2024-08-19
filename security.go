@@ -6,7 +6,9 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
+	"errors"
 	"hash"
+	"strings"
 )
 
 // HMACSHA256SignerPool represents a limited pool of HMAC-SHA256 signers.
@@ -20,14 +22,14 @@ type HMACSHA256SignerPool struct {
 // NewHMACSHA256SignerPool initializes a new limited pool of HMAC-SHA256 signers.
 //
 // Parameters:
-//   - secret: A string containing the secret key used for HMAC operations.
+//   - secret: A byte slice containing the secret key used for HMAC operations.
 //   - maxPoolSize: An integer specifying the maximum number of HMAC signers to keep in the pool.
 //
 // Returns:
 //   - A pointer to a new HMACSHA256SignerPool instance.
-func NewHMACSHA256SignerPool(secret string, maxPoolSize int) *HMACSHA256SignerPool {
+func NewHMACSHA256SignerPool(secret []byte, maxPoolSize int) *HMACSHA256SignerPool {
 	return &HMACSHA256SignerPool{
-		secret:  []byte(secret),
+		secret:  secret,
 		maxSize: maxPoolSize,
 		pool:    make(chan hash.Hash, maxPoolSize),
 	}
@@ -63,45 +65,97 @@ func (s *HMACSHA256SignerPool) releaseHMAC(h hash.Hash) {
 // Sign signs a message using a pooled HMAC.
 //
 // Parameters:
-//   - message: A string containing the message to be signed.
+//   - message: A byte slice containing the message to be signed.
 //
 // Returns:
-//   - A string containing the base64-encoded HMAC signature.
+//   - A byte slice containing the HMAC signature.
 //   - An error if the signing process fails.
-func (s *HMACSHA256SignerPool) Sign(message string) (string, error) {
+func (s *HMACSHA256SignerPool) Sign(message []byte) ([]byte, error) {
 	h, err := s.getHMAC()
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	defer s.releaseHMAC(h)
 
-	h.Write([]byte(message))
-	signature := h.Sum(nil)
-	return base64.StdEncoding.EncodeToString(signature), nil
+	h.Write(message)
+	return h.Sum(nil), nil
 }
 
-// Verify verifies a signed message using a pooled HMAC and returns the original message.
+// Verify verifies a signed message using a pooled HMAC.
 //
 // Parameters:
-//   - message: A string containing the original message that was signed.
-//   - signature: A string containing the base64-encoded HMAC signature to verify.
+//   - message: A byte slice containing the original message that was signed.
+//   - signature: A byte slice containing the HMAC signature to verify.
 //
 // Returns:
 //   - A boolean indicating whether the signature is valid (true) or not (false).
-//   - A string containing the original message (unchanged from the input).
-//   - An error if the verification process fails (e.g., due to invalid base64 encoding).
-func (s *HMACSHA256SignerPool) Verify(message, signature string) (bool, string, error) {
+func (s *HMACSHA256SignerPool) Verify(message, signature []byte) bool {
 	h, err := s.getHMAC()
 	if err != nil {
-		return false, "", err
+		return false
 	}
 	defer s.releaseHMAC(h)
 
-	expectedSignature, err := s.Sign(message)
+	h.Write(message)
+	expectedSignature := h.Sum(nil)
+
+	return hmac.Equal(expectedSignature, signature)
+}
+
+// SignAndEncode signs a message and encodes it with the signature.
+//
+// Parameters:
+//   - message: A string containing the message to be signed.
+//
+// Returns:
+//   - A string containing the base64-encoded message and HMAC signature, separated by a delimiter.
+//   - An error if the signing process fails.
+func (s *HMACSHA256SignerPool) SignAndEncode(message string) (string, error) {
+	signature, err := s.Sign([]byte(message))
+	if err != nil {
+		return "", err
+	}
+
+	// Encode message and signature separately
+	encodedMessage := base64.StdEncoding.EncodeToString([]byte(message))
+	encodedSignature := base64.StdEncoding.EncodeToString(signature)
+
+	// Combine encoded message and signature
+	return encodedMessage + "." + encodedSignature, nil
+}
+
+// VerifyAndDecode verifies a signed and encoded message and returns the original message.
+//
+// Parameters:
+//   - signedMessage: A string containing the base64-encoded message and HMAC signature.
+//
+// Returns:
+//   - A boolean indicating whether the signature is valid (true) or not (false).
+//   - A string containing the original message.
+//   - An error if the verification process fails.
+func (s *HMACSHA256SignerPool) VerifyAndDecode(signedMessage string) (bool, string, error) {
+	// Split the combined message and signature
+	parts := strings.Split(signedMessage, ".")
+	if len(parts) != 2 {
+		return false, "", errors.New("invalid signed message format")
+	}
+
+	encodedMessage, encodedSignature := parts[0], parts[1]
+
+	// Decode the message
+	messageBytes, err := base64.StdEncoding.DecodeString(encodedMessage)
 	if err != nil {
 		return false, "", err
 	}
 
-	isValid := hmac.Equal([]byte(expectedSignature), []byte(signature))
-	return isValid, message, nil
+	// Decode the signature
+	signatureBytes, err := base64.StdEncoding.DecodeString(encodedSignature)
+	if err != nil {
+		return false, "", err
+	}
+
+	// Verify the signature
+	isValid := s.Verify(messageBytes, signatureBytes)
+
+	return isValid, string(messageBytes), nil
 }

@@ -453,7 +453,7 @@ func addToCartHandler(sm *gopgsession.SessionManager) http.HandlerFunc {
 
 ### Signed Cookies for DDOS Mitigation
 
-To reduce overhead when handling requests for non-existent sessions (which could be part of a DDOS attack), you can sign the session ID cookie. This allows you to verify the signature before attempting to retrieve the session from the database or cache.
+To reduce overhead when handling requests for non-existent sessions (which could be part of a DDOS attack), you can sign the session ID cookie. This allows you to verify the signature before attempting to retrieve the session from the database or cache. The `HMACSHA256SignerPool` provides `SignAndEncode` and `VerifyAndDecode` methods for this purpose.
 
 Here's an example of how to implement this:
 
@@ -461,12 +461,12 @@ Here's an example of how to implement this:
 import (
     "github.com/tzahifadida/go-pg-session"
     "github.com/google/uuid"
-    "strings"
     "fmt"
 )
 
 // Initialize the signer
-signerPool := gopgsession.NewHMACSHA256SignerPool("your-secret-key", 10)
+secret := []byte("your-secret-key")
+signerPool := gopgsession.NewHMACSHA256SignerPool(secret, 10)
 
 // When creating a session and setting the cookie
 func loginHandler(sm *gopgsession.SessionManager) http.HandlerFunc {
@@ -479,9 +479,8 @@ func loginHandler(sm *gopgsession.SessionManager) http.HandlerFunc {
             return
         }
 
-        // Sign the session ID
-        sessionIDString := session.ID.String()
-        signature, err := signerPool.Sign(sessionIDString)
+        // Sign and encode the session ID
+        signedSessionID, err := signerPool.SignAndEncode(session.ID.String())
         if err != nil {
             http.Error(w, "Failed to sign session", http.StatusInternalServerError)
             return
@@ -490,7 +489,7 @@ func loginHandler(sm *gopgsession.SessionManager) http.HandlerFunc {
         // Set the signed session cookie
         http.SetCookie(w, &http.Cookie{
             Name:     "session_id",
-            Value:    sessionIDString + "." + signature,
+            Value:    signedSessionID,
             HttpOnly: true,
             Secure:   true,
             SameSite: http.SameSiteStrictMode,
@@ -508,23 +507,19 @@ func getSession(sm *gopgsession.SessionManager, r *http.Request) (*gopgsession.S
         return nil, err
     }
 
-    parts := strings.Split(cookie.Value, ".")
-    if len(parts) != 2 {
-        return nil, fmt.Errorf("invalid session cookie format")
+    // Verify the signature and decode the session ID
+    isValid, sessionIDString, err := signerPool.VerifyAndDecode(cookie.Value)
+    if err != nil {
+        return nil, fmt.Errorf("failed to verify and decode session data: %w", err)
     }
-
-    sessionIDString, signature := parts[0], parts[1]
-
-    // Verify the signature
-    isValid, _, err := signerPool.Verify(sessionIDString, signature)
-    if err != nil || !isValid {
+    if !isValid {
         return nil, fmt.Errorf("invalid session signature")
     }
 
     // Parse the session ID
     sessionID, err := uuid.Parse(sessionIDString)
     if err != nil {
-        return nil, fmt.Errorf("invalid session ID")
+        return nil, fmt.Errorf("invalid session ID: %w", err)
     }
 
     // Retrieve the session
@@ -532,7 +527,20 @@ func getSession(sm *gopgsession.SessionManager, r *http.Request) (*gopgsession.S
 }
 ```
 
-By signing the session cookie, you can quickly reject invalid or tampered requests without querying the database or cache. This approach can significantly reduce the impact of DDOS attacks targeting your session management system.
+This approach leverages the `HMACSHA256SignerPool`'s methods for signing and verifying session information:
+
+1. `SignAndEncode`: This method signs the given session ID and encodes it into a single string.
+2. `VerifyAndDecode`: This method verifies the signature and decodes the original session ID.
+
+By using these methods, you ensure that the session ID is signed, providing an additional layer of security. This approach can significantly reduce the impact of DDOS attacks targeting your session management system by allowing you to quickly reject invalid or tampered requests without querying the database or cache.
+
+Key benefits of this approach:
+
+1. **Efficiency**: The signature can be verified without accessing the database, reducing load on your backend for invalid requests.
+2. **Security**: The signed session ID prevents tampering and forgery attempts.
+3. **Simplicity**: By focusing on just the session ID, the implementation remains straightforward and easy to understand.
+
+Remember that while this method provides an extra layer of security, it's still important to implement other security best practices, such as using HTTPS, setting appropriate cookie flags, and implementing proper session management on the server side.
 
 ## Choosing Between CheckVersion and CheckAttributeVersion
 
