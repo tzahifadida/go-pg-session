@@ -33,60 +33,28 @@ const (
 
 // Config holds the configuration options for the SessionManager.
 type Config struct {
-	// MaxSessions is the maximum number of concurrent sessions allowed per user.
-	// When this limit is reached, the oldest session will be removed.
-	MaxSessions int `json:"maxSessions"`
-
-	// MaxAttributeLength is the maximum length (in bytes) allowed for a single session attribute value.
-	MaxAttributeLength int `json:"maxAttributeLength"`
-
-	// SessionExpiration is the duration after which a session expires if not accessed.
-	SessionExpiration time.Duration `json:"sessionExpiration"`
-
-	// InactivityDuration is the duration of inactivity after which a session is considered expired.
-	InactivityDuration time.Duration `json:"inactivityDuration"`
-
-	// CleanupInterval is the time interval between cleanup operations for expired sessions.
-	CleanupInterval time.Duration `json:"cleanupInterval"`
-
-	// CacheSize is the maximum number of sessions to keep in the in-memory cache.
-	CacheSize int `json:"cacheSize"`
-
-	// TablePrefix is the prefix to be used for all database tables created by the SessionManager.
-	// This allows multiple SessionManager instances to coexist in the same database.
-	TablePrefix string `json:"tablePrefix"`
-
-	// SchemaName is the name of the PostgreSQL schema to use for session tables.
-	// If empty, the default schema (usually "public") will be used.
-	SchemaName string `json:"schemaName"`
-
-	// CreateSchemaIfMissing, if true, will create the specified schema if it doesn't exist.
-	CreateSchemaIfMissing bool `json:"createSchemaIfMissing"`
-
-	// LastAccessUpdateInterval is the time interval between batch updates of session last access times.
-	LastAccessUpdateInterval time.Duration `json:"lastAccessUpdateInterval"`
-
-	// LastAccessUpdateBatchSize is the maximum number of sessions to update in a single batch operation.
-	LastAccessUpdateBatchSize int `json:"lastAccessUpdateBatchSize"`
-
-	// NotifyOnUpdates determines whether to send notifications on session updates.
-	// This is a noisier option (true by default) but safer if you do not use additional cookies to note the last version.
-	// For dozens of nodes, you may want to turn it off.
-	NotifyOnUpdates bool
-
-	// NotifyOnFailedUpdates sends a removal notification when, for example, a version check fails. FALSE by default.
-	NotifyOnFailedUpdates bool
-
-	// CustomPGLN is an optional custom PGLN instance. If not supplied, a new one will be created with defaults.
-	CustomPGLN *pgln.PGListenNotify `json:"-"`
+	MaxSessions               int           `json:"maxSessions"`
+	MaxAttributeLength        int           `json:"maxAttributeLength"`
+	SessionExpiration         time.Duration `json:"sessionExpiration"`
+	InactivityDuration        time.Duration `json:"inactivityDuration"`
+	CleanupInterval           time.Duration `json:"cleanupInterval"`
+	CacheSize                 int           `json:"cacheSize"`
+	TablePrefix               string        `json:"tablePrefix"`
+	SchemaName                string        `json:"schemaName"`
+	CreateSchemaIfMissing     bool          `json:"createSchemaIfMissing"`
+	LastAccessUpdateInterval  time.Duration `json:"lastAccessUpdateInterval"`
+	LastAccessUpdateBatchSize int           `json:"lastAccessUpdateBatchSize"`
+	NotifyOnUpdates           bool
+	NotifyOnFailedUpdates     bool
+	CustomPGLN                *pgln.PGListenNotify `json:"-"`
 }
 
 // DefaultConfig returns a Config struct with default values.
 func DefaultConfig() *Config {
 	return &Config{
 		MaxSessions:               5,
-		MaxAttributeLength:        16 * 1024,           // 16KB
-		SessionExpiration:         30 * 24 * time.Hour, // 30 days
+		MaxAttributeLength:        16 * 1024,
+		SessionExpiration:         30 * 24 * time.Hour,
 		InactivityDuration:        48 * time.Hour,
 		CleanupInterval:           1 * time.Hour,
 		CacheSize:                 1000,
@@ -116,26 +84,28 @@ type SessionAttributeValue struct {
 }
 
 type Session struct {
-	ID     uuid.UUID `db:"id"`
-	UserID uuid.UUID `db:"user_id"`
-
-	// These are not updated in the cache often, only the table is the source of truth.
+	ID           uuid.UUID `db:"id"`
+	UserID       uuid.UUID `db:"user_id"`
 	LastAccessed time.Time `db:"last_accessed"`
 	ExpiresAt    time.Time `db:"expires_at"`
 	UpdatedAt    time.Time `db:"updated_at"`
 	Version      int       `db:"version"`
-
-	attributes map[string]SessionAttributeValue
-	changed    map[string]bool
-	deleted    map[string]bool
-	sm         *SessionManager
-	fromCache  bool
+	attributes   map[string]SessionAttributeValue
+	changed      map[string]bool
+	deleted      map[string]bool
+	sm           *SessionManager
+	fromCache    bool
 }
 
 // IsFromCache returns true if the session was loaded from the cache,
 // and false if it was loaded from the database table.
 func (s *Session) IsFromCache() bool {
 	return s.fromCache
+}
+
+// IsModified returns true if the session has been modified (attributes changed or deleted).
+func (s *Session) IsModified() bool {
+	return len(s.changed) > 0 || len(s.deleted) > 0
 }
 
 type cacheItem struct {
@@ -154,6 +124,7 @@ type sessionNotification struct {
 type SessionManager struct {
 	Config                *Config
 	cache                 map[uuid.UUID]*cacheItem
+	userSessionsIndex     map[uuid.UUID][]uuid.UUID
 	lru                   *list.List
 	db                    *sqlx.DB
 	pgln                  *pgln.PGListenNotify
@@ -174,14 +145,6 @@ type GetSessionOptions struct {
 }
 
 // NewSessionManager creates a new SessionManager with the given configuration and connection string.
-//
-// Parameters:
-//   - ctx: A long-running context that should hold up until shutdown
-//   - cfg: A pointer to a Config struct containing the configuration options for the SessionManager.
-//   - db: An pgx (v5) stdlib
-//
-// Returns:
-//   - A pointer to the created SessionManager and an error if any occurred during initialization.
 func NewSessionManager(ctx context.Context, cfg *Config, db *sql.DB) (*SessionManager, error) {
 	if cfg == nil {
 		cfg = DefaultConfig()
@@ -223,6 +186,7 @@ func NewSessionManager(ctx context.Context, cfg *Config, db *sql.DB) (*SessionMa
 	sm := &SessionManager{
 		Config:            cfg,
 		cache:             make(map[uuid.UUID]*cacheItem),
+		userSessionsIndex: make(map[uuid.UUID][]uuid.UUID),
 		lru:               list.New(),
 		db:                sqlxDB,
 		shutdownChan:      make(chan struct{}),
@@ -281,10 +245,10 @@ func NewSessionManager(ctx context.Context, cfg *Config, db *sql.DB) (*SessionMa
 func (sm *SessionManager) checkTables() error {
 	var count int
 	query := fmt.Sprintf(`
-		SELECT COUNT(*)
-		FROM information_schema.tables
-		WHERE table_schema = $1 AND table_name = $2
-	`)
+        SELECT COUNT(*)
+        FROM information_schema.tables
+        WHERE table_schema = $1 AND table_name = $2
+    `)
 	schemaName := sm.Config.SchemaName
 	if schemaName == "" {
 		schemaName = "public"
@@ -311,23 +275,23 @@ func (sm *SessionManager) createSchemaAndTables() error {
 
 	queries = append(queries, []string{
 		fmt.Sprintf(`
-			CREATE TABLE IF NOT EXISTS %s (
-				"id" UUID PRIMARY KEY,
-				"user_id" UUID NOT NULL,
-				"last_accessed" TIMESTAMP WITH TIME ZONE NOT NULL,
-				"expires_at" TIMESTAMP WITH TIME ZONE NOT NULL,
-				"updated_at" TIMESTAMP WITH TIME ZONE NOT NULL,
-				"version" INTEGER NOT NULL DEFAULT 1
-			);`, sm.getTableName("sessions")),
+            CREATE TABLE IF NOT EXISTS %s (
+                "id" UUID PRIMARY KEY,
+                "user_id" UUID NOT NULL,
+                "last_accessed" TIMESTAMP WITH TIME ZONE NOT NULL,
+                "expires_at" TIMESTAMP WITH TIME ZONE NOT NULL,
+                "updated_at" TIMESTAMP WITH TIME ZONE NOT NULL,
+                "version" INTEGER NOT NULL DEFAULT 1
+            );`, sm.getTableName("sessions")),
 		fmt.Sprintf(`
-			CREATE TABLE IF NOT EXISTS %s (
-				"session_id" UUID REFERENCES %s("id") ON DELETE CASCADE,
-				"key" TEXT NOT NULL,
-				"value" TEXT NOT NULL,
-				"expires_at" TIMESTAMP WITH TIME ZONE,
-				"version" INTEGER NOT NULL DEFAULT 1,
-				PRIMARY KEY ("session_id", "key")
-			);`, sm.getTableName("session_attributes"), sm.getTableName("sessions")),
+            CREATE TABLE IF NOT EXISTS %s (
+                "session_id" UUID REFERENCES %s("id") ON DELETE CASCADE,
+                "key" TEXT NOT NULL,
+                "value" TEXT NOT NULL,
+                "expires_at" TIMESTAMP WITH TIME ZONE,
+                "version" INTEGER NOT NULL DEFAULT 1,
+                PRIMARY KEY ("session_id", "key")
+            );`, sm.getTableName("session_attributes"), sm.getTableName("sessions")),
 		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS "%ssessions_user_id_idx" ON %s ("user_id");`,
 			sm.Config.TablePrefix, sm.getTableName("sessions")),
 		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS "%ssessions_expires_at_idx" ON %s ("expires_at");`,
@@ -351,14 +315,6 @@ func (sm *SessionManager) createSchemaAndTables() error {
 }
 
 // CreateSession creates a new session for the given user with the provided attributes.
-//
-// Parameters:
-//   - ctx: The context for the operation.
-//   - userID: The UUID of the user for whom the session is being created.
-//   - attributes: A map of initial attributes for the session.
-//
-// Returns:
-//   - A pointer to the created Session and an error if any occurred during creation.
 func (sm *SessionManager) CreateSession(ctx context.Context, userID uuid.UUID, attributes map[string]SessionAttributeValue) (*Session, error) {
 	sessionID, err := uuid.NewRandom()
 	if err != nil {
@@ -388,9 +344,9 @@ func (sm *SessionManager) CreateSession(ctx context.Context, userID uuid.UUID, a
 	}
 
 	query := fmt.Sprintf(`
-		INSERT INTO %s ("id", "user_id", "last_accessed", "expires_at", "updated_at", "version")
-		VALUES (:id, :user_id, :last_accessed, :expires_at, :updated_at, :version)
-	`, sm.getTableName("sessions"))
+        INSERT INTO %s ("id", "user_id", "last_accessed", "expires_at", "updated_at", "version")
+        VALUES (:id, :user_id, :last_accessed, :expires_at, :updated_at, :version)
+    `, sm.getTableName("sessions"))
 
 	_, err = tx.NamedExecContext(ctx, query, session)
 	if err != nil {
@@ -416,9 +372,9 @@ func (sm *SessionManager) CreateSession(ctx context.Context, userID uuid.UUID, a
 			Version:   1, // Initial version for new attributes
 		}
 		query := fmt.Sprintf(`
-			INSERT INTO %s ("session_id", "key", "value", "expires_at", "version")
-			VALUES (:session_id, :key, :value, :expires_at, :version)
-		`, sm.getTableName("session_attributes"))
+            INSERT INTO %s ("session_id", "key", "value", "expires_at", "version")
+            VALUES (:session_id, :key, :value, :expires_at, :version)
+        `, sm.getTableName("session_attributes"))
 
 		_, err = tx.NamedExecContext(ctx, query, attributeRecord)
 		if err != nil {
@@ -463,28 +419,11 @@ func WithForceRefresh() SessionOption {
 }
 
 // GetSession retrieves a session by its ID with optional parameters.
-//
-// Parameters:
-//   - ctx: The context for the operation.
-//   - sessionID: The UUID of the session to retrieve.
-//   - options: Variadic SessionOption parameters to customize the retrieval behavior.
-//
-// Returns:
-//   - A pointer to the retrieved Session and an error if any occurred during retrieval.
 func (sm *SessionManager) GetSession(ctx context.Context, sessionID uuid.UUID, options ...SessionOption) (*Session, error) {
 	return sm.GetSessionWithVersion(ctx, sessionID, 0, options...)
 }
 
 // GetSessionWithVersion retrieves a session by its ID and version with optional parameters.
-//
-// Parameters:
-//   - ctx: The context for the operation.
-//   - sessionID: The UUID of the session to retrieve.
-//   - version: The version of the session to retrieve.
-//   - options: Variadic SessionOption parameters to customize the retrieval behavior.
-//
-// Returns:
-//   - A pointer to the retrieved Session and an error if any occurred during retrieval.
 func (sm *SessionManager) GetSessionWithVersion(ctx context.Context, sessionID uuid.UUID, version int, options ...SessionOption) (*Session, error) {
 	opts := GetSessionOptions{}
 	for _, option := range options {
@@ -518,10 +457,10 @@ func (sm *SessionManager) GetSessionWithVersion(ctx context.Context, sessionID u
 	}
 
 	query := fmt.Sprintf(`
-		SELECT "id", "user_id", "last_accessed", "expires_at", "updated_at", "version"
+        SELECT "id", "user_id", "last_accessed", "expires_at", "updated_at", "version"
             FROM %s
             WHERE "id" = $1
-	`, sm.getTableName("sessions"))
+    `, sm.getTableName("sessions"))
 
 	session := &Session{}
 	err := sm.db.GetContext(ctx, session, query, sessionID)
@@ -590,14 +529,6 @@ func WithDoNotNotify() UpdateSessionOption {
 }
 
 // UpdateSession updates the session in the database with any changes made to its attributes.
-//
-// Parameters:
-//   - ctx: The context for the operation.
-//   - session: A pointer to the Session to be updated.
-//   - options: Variadic UpdateSessionOption parameters to customize the update behavior.
-//
-// Returns:
-//   - A pointer to the updated Session and an error if any occurred during the update.
 func (sm *SessionManager) UpdateSession(ctx context.Context, session *Session, options ...UpdateSessionOption) (*Session, error) {
 	session = session.deepCopy()
 	opts := UpdateSessionOptions{}
@@ -632,32 +563,32 @@ func (sm *SessionManager) UpdateSession(ctx context.Context, session *Session, o
 				if attr.Version < 0 {
 					// Insert new attribute
 					query = fmt.Sprintf(`
-						INSERT INTO %s ("session_id", "key", "value", "expires_at", "version")
-						VALUES ($1, $2, $3, $4, 1)
-						RETURNING "version"
-					`, sm.getTableName("session_attributes"))
+                        INSERT INTO %s ("session_id", "key", "value", "expires_at", "version")
+                        VALUES ($1, $2, $3, $4, 1)
+                        RETURNING "version"
+                    `, sm.getTableName("session_attributes"))
 					args = []interface{}{session.ID, key, marshaledValue, attr.ExpiresAt}
 				} else {
 					// Update existing attribute
 					query = fmt.Sprintf(`
-						UPDATE %s
-						SET "value" = $1, "expires_at" = $2, "version" = "version" + 1
-						WHERE "session_id" = $3 AND "key" = $4 AND "version" = $5
-						RETURNING "version"
-					`, sm.getTableName("session_attributes"))
+                        UPDATE %s
+                        SET "value" = $1, "expires_at" = $2, "version" = "version" + 1
+                        WHERE "session_id" = $3 AND "key" = $4 AND "version" = $5
+                        RETURNING "version"
+                    `, sm.getTableName("session_attributes"))
 					args = []interface{}{marshaledValue, attr.ExpiresAt, session.ID, key, attr.Version}
 				}
 			} else {
 				// Original upsert logic
 				query = fmt.Sprintf(`
-					INSERT INTO %s ("session_id", "key", "value", "expires_at", "version")
-					VALUES ($1, $2, $3, $4, 1)
-					ON CONFLICT ("session_id", "key") DO UPDATE
-					SET "value" = EXCLUDED.value, 
-						"expires_at" = EXCLUDED.expires_at, 
-						"version" = %s.version + 1
-					RETURNING "version"
-				`, sm.getTableName("session_attributes"), sm.getTableName("session_attributes"))
+                    INSERT INTO %s ("session_id", "key", "value", "expires_at", "version")
+                    VALUES ($1, $2, $3, $4, 1)
+                    ON CONFLICT ("session_id", "key") DO UPDATE
+                    SET "value" = EXCLUDED.value, 
+                        "expires_at" = EXCLUDED.expires_at, 
+                        "version" = %s.version + 1
+                    RETURNING "version"
+                `, sm.getTableName("session_attributes"), sm.getTableName("session_attributes"))
 				args = []interface{}{session.ID, key, marshaledValue, attr.ExpiresAt}
 			}
 
@@ -782,13 +713,6 @@ func (sm *SessionManager) UpdateSession(ctx context.Context, session *Session, o
 }
 
 // DeleteSession deletes a session by its ID.
-//
-// Parameters:
-//   - ctx: The context for the operation.
-//   - sessionID: The UUID of the session to delete.
-//
-// Returns:
-//   - An error if any occurred during the deletion.
 func (sm *SessionManager) DeleteSession(ctx context.Context, sessionID uuid.UUID) error {
 	tx, err := sm.db.BeginTxx(ctx, nil)
 	if err != nil {
@@ -818,6 +742,7 @@ func (sm *SessionManager) DeleteSession(ctx context.Context, sessionID uuid.UUID
 
 	sm.mutex.Lock()
 	if item, exists := sm.cache[sessionID]; exists {
+		sm.removeFromUserSessionsIndex(item.session.UserID, sessionID)
 		sm.lru.Remove(item.element)
 		delete(sm.cache, sessionID)
 	}
@@ -827,12 +752,6 @@ func (sm *SessionManager) DeleteSession(ctx context.Context, sessionID uuid.UUID
 }
 
 // DeleteAllSessions deletes all sessions from the database and cache.
-//
-// Parameters:
-//   - ctx: The context for the operation.
-//
-// Returns:
-//   - An error if any occurred during the deletion.
 func (sm *SessionManager) DeleteAllSessions(ctx context.Context) error {
 	tx, err := sm.db.BeginTxx(ctx, nil)
 	if err != nil {
@@ -878,6 +797,7 @@ func (sm *SessionManager) DeleteAllSessions(ctx context.Context) error {
 	sm.mutex.Lock()
 	for _, sessionID := range deletedSessionIDs {
 		if item, exists := sm.cache[sessionID]; exists {
+			sm.removeFromUserSessionsIndex(item.session.UserID, sessionID)
 			sm.lru.Remove(item.element)
 			delete(sm.cache, sessionID)
 		}
@@ -888,13 +808,6 @@ func (sm *SessionManager) DeleteAllSessions(ctx context.Context) error {
 }
 
 // DeleteAllUserSessions deletes all sessions for a given user.
-//
-// Parameters:
-//   - ctx: The context for the operation.
-//   - userID: The UUID of the user whose sessions should be deleted.
-//
-// Returns:
-//   - An error if any occurred during the deletion.
 func (sm *SessionManager) DeleteAllUserSessions(ctx context.Context, userID uuid.UUID) error {
 	tx, err := sm.db.BeginTxx(ctx, nil)
 	if err != nil {
@@ -941,6 +854,7 @@ func (sm *SessionManager) DeleteAllUserSessions(ctx context.Context, userID uuid
 	sm.mutex.Lock()
 	for _, sessionID := range deletedSessionIDs {
 		if item, exists := sm.cache[sessionID]; exists {
+			sm.removeFromUserSessionsIndex(item.session.UserID, sessionID)
 			sm.lru.Remove(item.element)
 			delete(sm.cache, sessionID)
 		}
@@ -952,7 +866,7 @@ func (sm *SessionManager) DeleteAllUserSessions(ctx context.Context, userID uuid
 
 func (sm *SessionManager) listAttributes(ctx context.Context, sessionID uuid.UUID) (map[string]SessionAttributeValue, error) {
 	query := fmt.Sprintf(`
-		SELECT "key", "value", "expires_at", "version"
+        SELECT "key", "value", "expires_at", "version"
         FROM %s
         WHERE "session_id" = $1
     `, sm.getTableName("session_attributes"))
@@ -1022,6 +936,7 @@ func (sm *SessionManager) handleNotification(channel string, payload string) {
 		sm.mutex.Lock()
 		for _, sessionID := range sessionsToRemove {
 			if item, exists := sm.cache[sessionID]; exists {
+				sm.removeFromUserSessionsIndex(item.session.UserID, sessionID)
 				sm.lru.Remove(item.element)
 				delete(sm.cache, sessionID)
 			}
@@ -1033,21 +948,15 @@ func (sm *SessionManager) handleNotification(channel string, payload string) {
 			log.Printf("Error parsing user ID: %v", err)
 			return
 		}
-		var sessionsToRemove []uuid.UUID
-		sm.mutex.RLock()
-		for sessionID, item := range sm.cache {
-			if item.session.UserID == userID {
-				sessionsToRemove = append(sessionsToRemove, sessionID)
-			}
-		}
-		sm.mutex.RUnlock()
-
 		sm.mutex.Lock()
-		for _, sessionID := range sessionsToRemove {
-			if item, exists := sm.cache[sessionID]; exists {
-				sm.lru.Remove(item.element)
-				delete(sm.cache, sessionID)
+		if sessions, exists := sm.userSessionsIndex[userID]; exists {
+			for _, sessionID := range sessions {
+				if item, exists := sm.cache[sessionID]; exists {
+					sm.lru.Remove(item.element)
+					delete(sm.cache, sessionID)
+				}
 			}
+			delete(sm.userSessionsIndex, userID)
 		}
 		sm.mutex.Unlock()
 	default:
@@ -1097,17 +1006,17 @@ func (sm *SessionManager) refreshCache(ctx context.Context) error {
 	args = append(args, threshold)
 
 	query := fmt.Sprintf(`
-		WITH existing(id) AS (
-			VALUES %s
-		)
-		SELECT existing.id FROM existing
-		LEFT JOIN %s s ON existing.id = s.id
-		WHERE s.id IS NULL
-		UNION
-		SELECT s.id FROM %s s
-		JOIN existing ON s.id = existing.id
-		WHERE s.updated_at > $%d
-	`, strings.Join(placeholders, ", "),
+        WITH existing(id) AS (
+            VALUES %s
+        )
+        SELECT existing.id FROM existing
+        LEFT JOIN %s s ON existing.id = s.id
+        WHERE s.id IS NULL
+        UNION
+        SELECT s.id FROM %s s
+        JOIN existing ON s.id = existing.id
+        WHERE s.updated_at > $%d
+    `, strings.Join(placeholders, ", "),
 		sm.getTableName("sessions"),
 		sm.getTableName("sessions"),
 		len(args))
@@ -1131,6 +1040,7 @@ func (sm *SessionManager) refreshCache(ctx context.Context) error {
 	sm.mutex.Lock()
 	for _, id := range toRemoveIDs {
 		if item, exists := sm.cache[id]; exists {
+			sm.removeFromUserSessionsIndex(item.session.UserID, id)
 			sm.lru.Remove(item.element)
 			delete(sm.cache, id)
 		}
@@ -1156,24 +1066,6 @@ func WithExpiresAt(expiresAt time.Time) UpdateAttributeOption {
 }
 
 // UpdateAttribute sets or updates an attribute for the session.
-//
-// Parameters:
-//   - key: The key of the attribute to update.
-//   - value: The value to set for the attribute. This will be converted to a string.
-//   - options: Variadic UpdateAttributeOption parameters to customize the update behavior.
-//
-// The method will return an error if:
-//   - The value cannot be converted to a string.
-//   - The resulting string exceeds the maximum allowed length for an attribute value.
-//
-// Example usage:
-//
-//	// Set an attribute without expiration
-//	err := session.UpdateAttribute("theme", "dark")
-//
-//	// Set an attribute with expiration
-//	expiresAt := time.Now().Add(24 * time.Hour)
-//	err := session.UpdateAttribute("temporary_flag", true, WithExpiresAt(expiresAt))
 func (s *Session) UpdateAttribute(key string, value interface{}, options ...UpdateAttributeOption) error {
 	opts := UpdateAttributeOptions{}
 	for _, option := range options {
@@ -1201,29 +1093,17 @@ func (s *Session) UpdateAttribute(key string, value interface{}, options ...Upda
 }
 
 // DeleteAttribute removes an attribute from the session.
-//
-// Parameters:
-//   - key: The key of the attribute to delete.
 func (s *Session) DeleteAttribute(key string) {
 	delete(s.attributes, key)
 	s.deleted[key] = true
 }
 
 // GetAttributes returns all attributes of the session.
-//
-// Returns:
-//   - A map of all session attributes.
 func (s *Session) GetAttributes() map[string]SessionAttributeValue {
 	return s.attributes
 }
 
 // GetAttribute retrieves a specific attribute from the session.
-//
-// Parameters:
-//   - key: The key of the attribute to retrieve.
-//
-// Returns:
-//   - The SessionAttributeValue for the given key and a boolean indicating whether the attribute was found.
 func (s *Session) GetAttribute(key string) (SessionAttributeValue, bool) {
 	attr, ok := s.attributes[key]
 	return attr, ok
@@ -1232,33 +1112,7 @@ func (s *Session) GetAttribute(key string) (SessionAttributeValue, bool) {
 var ErrAttributeNotFound = errors.New("attribute not found")
 
 // GetAttributeAndRetainUnmarshaled retrieves a specific attribute, unmarshals it if necessary,
-// and retains the unmarshaled value in memory for future use. This method is optimized to
-// prevent repeated unmarshaling of the same attribute as long as the session remains in memory.
-//
-// It's particularly beneficial for attributes that are frequently accessed and expensive to unmarshal.
-// By retaining the unmarshaled value, subsequent calls to this method for the same attribute will
-// return the cached unmarshaled value without the need for repeated unmarshaling operations.
-//
-// The method also ensures thread-safety when updating the shared cache, only doing so if the
-// cached value hasn't been modified by another goroutine.
-//
-// Parameters:
-//   - key: The key of the attribute to retrieve and unmarshal.
-//   - v: A pointer to the struct where the unmarshaled value will be stored.
-//
-// Returns:
-//   - A copy of the SessionAttributeValue (which may be newly unmarshaled or previously cached)
-//     and an error if any occurred during the retrieval or unmarshaling process.
-//   - If an attribute is not found it returns ErrAttributeNotFound
-//
-// Usage:
-//
-//	var myStruct MyStructType
-//	attr, err := session.GetAttributeAndRetainUnmarshaled("myKey", &myStruct)
-//	if err != nil {
-//	    // Handle error
-//	}
-//	// Use myStruct and attr as needed
+// and retains the unmarshaled value in memory for future use.
 func (s *Session) GetAttributeAndRetainUnmarshaled(key string, v interface{}) (SessionAttributeValue, error) {
 	attr, ok := s.attributes[key]
 	if !ok {
@@ -1330,6 +1184,7 @@ func setValue(v interface{}, value interface{}) error {
 	rv.Set(vv)
 	return nil
 }
+
 func (s *Session) deepCopy() *Session {
 	copiedAttributes := make(map[string]SessionAttributeValue, len(s.attributes))
 	for k, v := range s.attributes {
@@ -1414,6 +1269,7 @@ func (sm *SessionManager) cleanupExpiredSessions(ctx context.Context) error {
 	sm.mutex.Lock()
 	for _, sessionID := range deletedSessionIDs {
 		if item, exists := sm.cache[sessionID]; exists {
+			sm.removeFromUserSessionsIndex(item.session.UserID, sessionID)
 			sm.lru.Remove(item.element)
 			delete(sm.cache, sessionID)
 		}
@@ -1463,6 +1319,7 @@ func (sm *SessionManager) enforceMaxSessions(ctx context.Context, userID uuid.UU
 		sm.mutex.Lock()
 		for _, sessionID := range deletedSessionIDs {
 			if item, exists := sm.cache[sessionID]; exists {
+				sm.removeFromUserSessionsIndex(item.session.UserID, sessionID)
 				sm.lru.Remove(item.element)
 				delete(sm.cache, sessionID)
 			}
@@ -1623,43 +1480,27 @@ func (sm *SessionManager) sendNotification(db *sqlx.DB, notificationType string,
 }
 
 // RemoveAllUserCachedSessionsFromAllNodes removes all cached sessions for a given user from all nodes.
-//
-// Parameters:
-//   - userID: The UUID of the user whose cached sessions should be removed.
-//
-// Returns:
-//   - An error if any occurred during the removal process.
 func (sm *SessionManager) RemoveAllUserCachedSessionsFromAllNodes(userID uuid.UUID) error {
 	sm.mutex.Lock()
-	for sessionID, item := range sm.cache {
-		if item.session.UserID == userID {
-			sm.lru.Remove(item.element)
-			delete(sm.cache, sessionID)
+	if sessions, exists := sm.userSessionsIndex[userID]; exists {
+		for _, sessionID := range sessions {
+			if item, exists := sm.cache[sessionID]; exists {
+				sm.lru.Remove(item.element)
+				delete(sm.cache, sessionID)
+			}
 		}
+		delete(sm.userSessionsIndex, userID)
 	}
 	sm.mutex.Unlock()
 	return sm.sendNotification(sm.db, NotificationTypeUserSessionsRemovalFromCache, []string{userID.String()})
 }
 
 // EncodeSessionIDAndVersion encodes a session ID and version into a single string.
-//
-// Parameters:
-//   - sessionID: The UUID of the session.
-//   - version: The version of the session.
-//
-// Returns:
-//   - A string containing the encoded session ID and version.
 func (sm *SessionManager) EncodeSessionIDAndVersion(sessionID uuid.UUID, version int) string {
 	return fmt.Sprintf("%s:%d", sessionID.String(), version)
 }
 
 // ParseSessionIDAndVersion parses an encoded session ID and version string.
-//
-// Parameters:
-//   - encodedData: The string containing the encoded session ID and version.
-//
-// Returns:
-//   - The parsed session UUID, version, and an error if any occurred during parsing.
 func (sm *SessionManager) ParseSessionIDAndVersion(encodedData string) (uuid.UUID, int, error) {
 	parts := strings.Split(encodedData, ":")
 	if len(parts) != 2 {
@@ -1680,12 +1521,6 @@ func (sm *SessionManager) ParseSessionIDAndVersion(encodedData string) (uuid.UUI
 }
 
 // Shutdown gracefully shuts down the SessionManager.
-//
-// Parameters:
-//   - ctx: The context for the shutdown operation.
-//
-// Returns:
-//   - An error if any occurred during the shutdown process.
 func (sm *SessionManager) Shutdown(ctx context.Context) error {
 	close(sm.shutdownChan)
 
@@ -1727,25 +1562,117 @@ func (sm *SessionManager) getChannelName(baseName string) string {
 func (sm *SessionManager) addOrUpdateCache(session *Session) {
 	sm.mutex.Lock()
 	defer sm.mutex.Unlock()
+
 	if item, exists := sm.cache[session.ID]; exists {
 		if session.Version > item.session.Version || session.UpdatedAt.After(item.session.UpdatedAt) {
+			if item.session.UserID != session.UserID {
+				sm.removeFromUserSessionsIndex(item.session.UserID, session.ID)
+			}
 			item.session = session
 			sm.lru.MoveToFront(item.element)
+			sm.addToUserSessionsIndex(session.UserID, session.ID)
 		}
 	} else {
 		if len(sm.cache) >= sm.Config.CacheSize {
-			oldest := sm.lru.Back()
-			if oldest != nil {
-				delete(sm.cache, oldest.Value.(uuid.UUID))
-				sm.lru.Remove(oldest)
-			}
+			sm.evictOldestSession()
 		}
 		element := sm.lru.PushFront(session.ID)
 		sm.cache[session.ID] = &cacheItem{
 			session: session,
 			element: element,
 		}
+		sm.addToUserSessionsIndex(session.UserID, session.ID)
 	}
+}
+
+func (sm *SessionManager) addToUserSessionsIndex(userID, sessionID uuid.UUID) {
+	if sm.userSessionsIndex == nil {
+		sm.userSessionsIndex = make(map[uuid.UUID][]uuid.UUID)
+	}
+	sm.userSessionsIndex[userID] = append(sm.userSessionsIndex[userID], sessionID)
+}
+
+func (sm *SessionManager) removeFromUserSessionsIndex(userID, sessionID uuid.UUID) {
+	if sessions, exists := sm.userSessionsIndex[userID]; exists {
+		for i, id := range sessions {
+			if id == sessionID {
+				// Remove the session ID from the slice
+				sm.userSessionsIndex[userID] = append(sessions[:i], sessions[i+1:]...)
+				break
+			}
+		}
+		if len(sm.userSessionsIndex[userID]) == 0 {
+			delete(sm.userSessionsIndex, userID)
+		}
+	}
+}
+
+func (sm *SessionManager) evictOldestSession() {
+	if oldest := sm.lru.Back(); oldest != nil {
+		sessionID := oldest.Value.(uuid.UUID)
+		if item, exists := sm.cache[sessionID]; exists {
+			sm.removeFromUserSessionsIndex(item.session.UserID, sessionID)
+			delete(sm.cache, sessionID)
+		}
+		sm.lru.Remove(oldest)
+	}
+}
+
+// DeleteAttributeFromAllUserSessions deletes a specific attribute from all sessions of a given user.
+func (sm *SessionManager) DeleteAttributeFromAllUserSessions(ctx context.Context, userID uuid.UUID, attributeKey string) error {
+	tx, err := sm.db.BeginTxx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %v", err)
+	}
+	defer tx.Rollback()
+
+	// Use a CTE to perform both the deletion and update in a single query
+	query := fmt.Sprintf(`
+        WITH user_sessions AS (
+            SELECT "id"
+            FROM %s
+            WHERE "user_id" = $1
+        ),
+        deleted_attributes AS (
+            DELETE FROM %s
+            WHERE "session_id" IN (SELECT "id" FROM user_sessions)
+            AND "key" = $2
+            RETURNING "session_id"
+        )
+        UPDATE %s
+        SET "version" = "version" + 1,
+            "updated_at" = $3
+        WHERE "id" IN (SELECT "session_id" FROM deleted_attributes)
+    `, sm.getTableName("sessions"), sm.getTableName("session_attributes"), sm.getTableName("sessions"))
+
+	_, err = tx.ExecContext(ctx, query, userID, attributeKey, sm.clock.Now())
+	if err != nil {
+		return fmt.Errorf("failed to execute delete and update query: %v", err)
+	}
+
+	err = sm.sendNotificationTx(tx, NotificationTypeUserSessionsRemovalFromCache, []string{userID.String()})
+	if err != nil {
+		return fmt.Errorf("failed to send notification: %v", err)
+	}
+
+	err = tx.Commit()
+	if err != nil {
+		return fmt.Errorf("failed to commit transaction: %v", err)
+	}
+
+	sm.mutex.Lock()
+	if sessions, exists := sm.userSessionsIndex[userID]; exists {
+		for _, sessionID := range sessions {
+			if item, exists := sm.cache[sessionID]; exists {
+				sm.lru.Remove(item.element)
+				delete(sm.cache, sessionID)
+			}
+		}
+		delete(sm.userSessionsIndex, userID)
+	}
+	sm.mutex.Unlock()
+
+	return nil
 }
 
 // Test helper functions
@@ -1760,5 +1687,6 @@ func (sm *SessionManager) clearCache() {
 	sm.mutex.Lock()
 	defer sm.mutex.Unlock()
 	sm.cache = make(map[uuid.UUID]*cacheItem)
+	sm.userSessionsIndex = make(map[uuid.UUID][]uuid.UUID)
 	sm.lru = list.New()
 }

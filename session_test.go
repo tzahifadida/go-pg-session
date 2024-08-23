@@ -1662,3 +1662,126 @@ func TestCheckAttributeVersion(t *testing.T) {
 		assert.Equal(t, 3, attr.Version) // Version should be incremented twice
 	})
 }
+
+// Add these new tests to the existing session_test.go file
+
+func TestDeleteAttributeFromAllUserSessions(t *testing.T) {
+	ctx := context.Background()
+
+	// Start PostgreSQL container
+	postgres, db, _, err := startPostgresContainer(ctx)
+	require.NoError(t, err)
+	defer postgres.Terminate(ctx)
+
+	// Create a new SessionManager
+	cfg := DefaultConfig()
+	cfg.CreateSchemaIfMissing = true
+	cfg.CacheSize = 100
+
+	sm, err := NewSessionManager(ctx, cfg, db)
+	require.NoError(t, err)
+	defer sm.Shutdown(context.Background())
+
+	// Set up a fake clock for testing
+	fakeClock := clockwork.NewFakeClock()
+	sm.setClock(fakeClock)
+
+	t.Run("DeleteAttributeFromAllUserSessions", func(t *testing.T) {
+		userID := uuid.New()
+		attributes := map[string]SessionAttributeValue{
+			"key1": {Value: "value1", Marshaled: false},
+			"key2": {Value: "value2", Marshaled: false},
+		}
+
+		// Create multiple sessions for the user
+		session1, err := sm.CreateSession(context.Background(), userID, attributes)
+		require.NoError(t, err)
+
+		session2, err := sm.CreateSession(context.Background(), userID, attributes)
+		require.NoError(t, err)
+
+		// Delete the "key1" attribute from all user sessions
+		err = sm.DeleteAttributeFromAllUserSessions(context.Background(), userID, "key1")
+		require.NoError(t, err)
+
+		// Verify that "key1" is deleted from both sessions
+		updatedSession1, err := sm.GetSessionWithVersion(context.Background(), session1.ID, session1.Version)
+		require.NoError(t, err)
+		_, exists := updatedSession1.GetAttribute("key1")
+		assert.False(t, exists)
+		_, exists = updatedSession1.GetAttribute("key2")
+		assert.True(t, exists)
+
+		updatedSession2, err := sm.GetSessionWithVersion(context.Background(), session2.ID, session2.Version)
+		require.NoError(t, err)
+		_, exists = updatedSession2.GetAttribute("key1")
+		assert.False(t, exists)
+		_, exists = updatedSession2.GetAttribute("key2")
+		assert.True(t, exists)
+	})
+}
+
+func TestUserSessionsIndexMaintenance(t *testing.T) {
+	ctx := context.Background()
+
+	// Start PostgreSQL container
+	postgres, db, _, err := startPostgresContainer(ctx)
+	require.NoError(t, err)
+	defer postgres.Terminate(ctx)
+
+	// Create a new SessionManager
+	cfg := DefaultConfig()
+	cfg.CreateSchemaIfMissing = true
+	cfg.CacheSize = 100
+
+	sm, err := NewSessionManager(ctx, cfg, db)
+	require.NoError(t, err)
+	defer sm.Shutdown(context.Background())
+
+	// Set up a fake clock for testing
+	fakeClock := clockwork.NewFakeClock()
+	sm.setClock(fakeClock)
+
+	t.Run("UserSessionsIndexMaintenance", func(t *testing.T) {
+		userID := uuid.New()
+		attributes := map[string]SessionAttributeValue{
+			"key": {Value: "value", Marshaled: false},
+		}
+
+		// Create multiple sessions for the user
+		session1, err := sm.CreateSession(context.Background(), userID, attributes)
+		require.NoError(t, err)
+
+		session2, err := sm.CreateSession(context.Background(), userID, attributes)
+		require.NoError(t, err)
+
+		// Verify that the userSessionsIndex contains both sessions
+		sm.mutex.RLock()
+		userSessions, exists := sm.userSessionsIndex[userID]
+		sm.mutex.RUnlock()
+		assert.True(t, exists)
+		assert.Len(t, userSessions, 2)
+
+		// Delete one session
+		err = sm.DeleteSession(context.Background(), session1.ID)
+		require.NoError(t, err)
+
+		// Verify that the userSessionsIndex still contains one session
+		sm.mutex.RLock()
+		userSessions, exists = sm.userSessionsIndex[userID]
+		sm.mutex.RUnlock()
+		assert.True(t, exists)
+		assert.Len(t, userSessions, 1)
+		assert.Equal(t, session2.ID, userSessions[0])
+
+		// Delete the second session
+		err = sm.DeleteSession(context.Background(), session2.ID)
+		require.NoError(t, err)
+
+		// Verify that the userSessionsIndex no longer contains an entry for the user
+		sm.mutex.RLock()
+		_, exists = sm.userSessionsIndex[userID]
+		sm.mutex.RUnlock()
+		assert.False(t, exists)
+	})
+}
