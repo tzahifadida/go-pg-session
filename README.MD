@@ -168,13 +168,24 @@ Create a configuration using the `Config` struct. You can use the `DefaultConfig
 - `LastAccessUpdateInterval`: Interval for updating the last access time of sessions.
 - `LastAccessUpdateBatchSize`: Batch size for updating last access times.
 - `NotifyOnUpdates`: Flag to enable/disable notifications on updates.
+- `MaxSessionLifetimeInCache`: Maximum duration a session can remain in the cache before being refreshed from the database.
 
 ```go
 cfg := gopgsession.DefaultConfig()
 cfg.MaxSessions = 10
 cfg.SessionExpiration = 24 * time.Hour // 1 day
 cfg.CreateSchemaIfMissing = true
+cfg.MaxSessionLifetimeInCache = 1 * time.Hour // Force refresh after 1 hour
 ```
+
+### MaxSessionLifetimeInCache
+
+The `MaxSessionLifetimeInCache` setting allows you to control how long a session can remain in the cache before it's forcefully refreshed from the database. This feature helps ensure that any manual changes made to the session in the database (e.g., forced logouts) are reflected in the cache within a reasonable timeframe.
+
+- If set to a positive duration, sessions older than this duration will be refreshed from the database on the next access.
+- If set to 0 or a negative value, this feature is disabled, and sessions will remain in the cache until explicitly invalidated or evicted.
+
+By default, this value is set to 48 hours. Adjust this setting based on your application's needs and the frequency of out-of-band session modifications.
 
 ## Usage Examples
 

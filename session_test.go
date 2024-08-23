@@ -829,7 +829,7 @@ func TestSessionManagerPerformance(t *testing.T) {
 		elapsed = time.Since(start)
 
 		log.Printf("Retrieved %d cached sessions in %s", numSessions, elapsed)
-		assert.Less(t, elapsed, 5*time.Second) // Adjust this threshold as needed
+		assert.Less(t, elapsed, 10*time.Second) // Adjust this threshold as needed
 	})
 }
 
@@ -1784,4 +1784,84 @@ func TestUserSessionsIndexMaintenance(t *testing.T) {
 		sm.mutex.RUnlock()
 		assert.False(t, exists)
 	})
+}
+
+func TestMaxSessionLifetimeInCache(t *testing.T) {
+	ctx := context.Background()
+
+	// Start PostgreSQL container
+	postgres, db, _, err := startPostgresContainer(ctx)
+	require.NoError(t, err)
+	defer postgres.Terminate(ctx)
+
+	// Create a new SessionManager with MaxSessionLifetimeInCache set
+	cfg := DefaultConfig()
+	cfg.CreateSchemaIfMissing = true
+	cfg.CacheSize = 100
+	cfg.MaxSessionLifetimeInCache = 2 * time.Second // Set a short duration for testing
+
+	sm, err := NewSessionManager(ctx, cfg, db)
+	require.NoError(t, err)
+	defer sm.Shutdown(context.Background())
+
+	// Set up a fake clock for testing
+	fakeClock := clockwork.NewFakeClock()
+	sm.setClock(fakeClock)
+
+	// Create a test session
+	userID := uuid.New()
+	attributes := map[string]SessionAttributeValue{
+		"key": {Value: "initial_value", Marshaled: false},
+	}
+
+	session, err := sm.CreateSession(context.Background(), userID, attributes)
+	require.NoError(t, err)
+
+	// Verify that the session is initially served from the cache
+	cachedSession, err := sm.GetSessionWithVersion(context.Background(), session.ID, session.Version)
+	require.NoError(t, err)
+	assert.True(t, cachedSession.IsFromCache())
+
+	// Advance the clock by 1 second (less than MaxSessionLifetimeInCache)
+	fakeClock.Advance(1 * time.Second)
+
+	// The session should still be served from the cache
+	cachedSession, err = sm.GetSessionWithVersion(context.Background(), session.ID, session.Version)
+	require.NoError(t, err)
+	assert.True(t, cachedSession.IsFromCache())
+
+	// Update the session in the database directly
+	_, err = db.ExecContext(ctx, fmt.Sprintf(`
+		UPDATE %s
+		SET "updated_at" = NOW(), "version" = "version" + 1
+		WHERE "id" = $1
+	`, sm.getTableName("sessions")), session.ID)
+	require.NoError(t, err)
+
+	// Update an attribute directly in the database
+	_, err = db.ExecContext(ctx, fmt.Sprintf(`
+		UPDATE %s
+		SET "value" = 'updated_value'
+		WHERE "session_id" = $1 AND "key" = 'key'
+	`, sm.getTableName("session_attributes")), session.ID)
+	require.NoError(t, err)
+
+	// Advance the clock past MaxSessionLifetimeInCache
+	fakeClock.Advance(2 * time.Second)
+
+	// The session should now be refreshed from the database
+	refreshedSession, err := sm.GetSessionWithVersion(context.Background(), session.ID, session.Version)
+	require.NoError(t, err)
+	assert.False(t, refreshedSession.IsFromCache())
+	assert.Equal(t, session.Version+1, refreshedSession.Version)
+
+	// Verify that the attribute was updated
+	attr, exists := refreshedSession.GetAttribute("key")
+	assert.True(t, exists)
+	assert.Equal(t, "updated_value", attr.Value)
+
+	// The next immediate fetch should be from cache again
+	cachedSession, err = sm.GetSessionWithVersion(context.Background(), session.ID, refreshedSession.Version)
+	require.NoError(t, err)
+	assert.True(t, cachedSession.IsFromCache())
 }

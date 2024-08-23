@@ -47,6 +47,7 @@ type Config struct {
 	NotifyOnUpdates           bool
 	NotifyOnFailedUpdates     bool
 	CustomPGLN                *pgln.PGListenNotify `json:"-"`
+	MaxSessionLifetimeInCache time.Duration        `json:"maxSessionLifetimeInCache"`
 }
 
 // DefaultConfig returns a Config struct with default values.
@@ -65,6 +66,7 @@ func DefaultConfig() *Config {
 		LastAccessUpdateBatchSize: 5000,
 		NotifyOnUpdates:           true,
 		NotifyOnFailedUpdates:     false,
+		MaxSessionLifetimeInCache: 48 * time.Hour,
 	}
 }
 
@@ -109,8 +111,9 @@ func (s *Session) IsModified() bool {
 }
 
 type cacheItem struct {
-	session *Session
-	element *list.Element
+	session     *Session
+	element     *list.Element
+	cachedSince time.Time
 }
 
 // sessionNotification represents a notification for session updates.
@@ -434,22 +437,28 @@ func (sm *SessionManager) GetSessionWithVersion(ctx context.Context, sessionID u
 		sm.mutex.RLock()
 		item, exists := sm.cache[sessionID]
 		if !sm.outOfSync && exists && item.session.Version >= version {
-			sessionCopy := item.session.deepCopy()
-			sessionCopy.fromCache = true
-			sm.mutex.RUnlock()
-			if !opts.DoNotUpdateSessionLastAccess {
-				sm.mutex.Lock()
-				if item, exists = sm.cache[sessionID]; exists && item.session.Version >= version {
-					now := sm.clock.Now()
-					item.session.LastAccessed = now
-					sm.lru.MoveToFront(item.element)
-					sessionCopy.LastAccessed = now
+			if sm.Config.MaxSessionLifetimeInCache > 0 && sm.clock.Now().Sub(item.cachedSince) > sm.Config.MaxSessionLifetimeInCache {
+				sm.mutex.RUnlock()
+				opts.ForceRefresh = true
+			} else {
+				// Existing code continues here
+				sessionCopy := item.session.deepCopy()
+				sessionCopy.fromCache = true
+				sm.mutex.RUnlock()
+				if !opts.DoNotUpdateSessionLastAccess {
+					sm.mutex.Lock()
+					if item, exists = sm.cache[sessionID]; exists && item.session.Version >= version {
+						now := sm.clock.Now()
+						item.session.LastAccessed = now
+						sm.lru.MoveToFront(item.element)
+						sessionCopy.LastAccessed = now
+					}
+					sm.mutex.Unlock()
 				}
-				sm.mutex.Unlock()
-			}
-			if exists {
-				go sm.updateSessionAccessAsync(sm.ctx, sessionID)
-				return sessionCopy, nil
+				if exists {
+					go sm.updateSessionAccessAsync(sm.ctx, sessionID)
+					return sessionCopy, nil
+				}
 			}
 		} else {
 			sm.mutex.RUnlock()
@@ -1569,6 +1578,7 @@ func (sm *SessionManager) addOrUpdateCache(session *Session) {
 				sm.removeFromUserSessionsIndex(item.session.UserID, session.ID)
 			}
 			item.session = session
+			item.cachedSince = sm.clock.Now()
 			sm.lru.MoveToFront(item.element)
 			sm.addToUserSessionsIndex(session.UserID, session.ID)
 		}
@@ -1578,8 +1588,9 @@ func (sm *SessionManager) addOrUpdateCache(session *Session) {
 		}
 		element := sm.lru.PushFront(session.ID)
 		sm.cache[session.ID] = &cacheItem{
-			session: session,
-			element: element,
+			session:     session,
+			element:     element,
+			cachedSince: sm.clock.Now(),
 		}
 		sm.addToUserSessionsIndex(session.UserID, session.ID)
 	}
