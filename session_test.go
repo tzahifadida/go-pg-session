@@ -1925,3 +1925,131 @@ func TestClearEntireCache(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, refreshedSession2.IsFromCache())
 }
+func TestGroupIDFunctionality(t *testing.T) {
+	ctx := context.Background()
+
+	// Start PostgreSQL container
+	postgres, db, _, err := startPostgresContainer(ctx)
+	require.NoError(t, err)
+	defer postgres.Terminate(ctx)
+
+	// Create a new SessionManager
+	cfg := DefaultConfig()
+	cfg.CreateSchemaIfMissing = true
+	cfg.CacheSize = 100
+
+	sm, err := NewSessionManager(ctx, cfg, db)
+	require.NoError(t, err)
+	defer sm.Shutdown(context.Background())
+
+	t.Run("CreateSessionWithGroupID", func(t *testing.T) {
+		userID := uuid.New()
+		groupID := uuid.New()
+		attributes := map[string]SessionAttributeValue{
+			"key": {Value: "value", Marshaled: false},
+		}
+
+		// Create a session with a group ID
+		session, err := sm.CreateSession(context.Background(), userID, attributes, WithGroupID(groupID))
+		require.NoError(t, err)
+		assert.NotEqual(t, uuid.Nil, session.ID)
+		assert.Equal(t, groupID, *session.GroupID)
+
+		// Retrieve the session and verify the group ID
+		retrievedSession, err := sm.GetSessionWithVersion(context.Background(), session.ID, 1)
+		require.NoError(t, err)
+		assert.Equal(t, userID, retrievedSession.UserID)
+		assert.Equal(t, groupID, *retrievedSession.GroupID)
+
+		// Create a session without a group ID
+		sessionWithoutGroup, err := sm.CreateSession(context.Background(), userID, attributes)
+		require.NoError(t, err)
+		assert.NotEqual(t, uuid.Nil, sessionWithoutGroup.ID)
+		assert.Nil(t, sessionWithoutGroup.GroupID)
+
+		// Retrieve the session without group ID and verify
+		retrievedSessionWithoutGroup, err := sm.GetSessionWithVersion(context.Background(), sessionWithoutGroup.ID, 1)
+		require.NoError(t, err)
+		assert.Equal(t, userID, retrievedSessionWithoutGroup.UserID)
+		assert.Nil(t, retrievedSessionWithoutGroup.GroupID)
+	})
+
+	t.Run("DeleteAllSessionsByGroupID", func(t *testing.T) {
+		groupID := uuid.New()
+		attributes := map[string]SessionAttributeValue{
+			"key": {Value: "value", Marshaled: false},
+		}
+
+		// Create multiple sessions with the same group ID
+		numSessions := 5
+		sessionIDs := make([]uuid.UUID, numSessions)
+		for i := 0; i < numSessions; i++ {
+			userID := uuid.New()
+			session, err := sm.CreateSession(context.Background(), userID, attributes, WithGroupID(groupID))
+			require.NoError(t, err)
+			sessionIDs[i] = session.ID
+		}
+
+		// Create a session with a different group ID
+		differentGroupID := uuid.New()
+		differentGroupSession, err := sm.CreateSession(context.Background(), uuid.New(), attributes, WithGroupID(differentGroupID))
+		require.NoError(t, err)
+
+		// Create a session without a group ID
+		sessionWithoutGroup, err := sm.CreateSession(context.Background(), uuid.New(), attributes)
+		require.NoError(t, err)
+
+		// Delete all sessions by group ID
+		err = sm.DeleteAllSessionsByGroupID(context.Background(), groupID)
+		require.NoError(t, err)
+
+		// Verify that all sessions with the group ID are deleted
+		for _, sessionID := range sessionIDs {
+			_, err := sm.GetSessionWithVersion(context.Background(), sessionID, 1)
+			assert.Error(t, err, "Session should have been deleted")
+		}
+
+		// Verify that the session with a different group ID still exists
+		_, err = sm.GetSessionWithVersion(context.Background(), differentGroupSession.ID, 1)
+		assert.NoError(t, err, "Session with different group ID should still exist")
+
+		// Verify that the session without a group ID still exists
+		_, err = sm.GetSessionWithVersion(context.Background(), sessionWithoutGroup.ID, 1)
+		assert.NoError(t, err, "Session without group ID should still exist")
+	})
+
+	t.Run("DeleteAllSessionsByGroupIDWithNotification", func(t *testing.T) {
+		groupID := uuid.New()
+		attributes := map[string]SessionAttributeValue{
+			"key": {Value: "value", Marshaled: false},
+		}
+
+		// Create a session with a group ID
+		session, err := sm.CreateSession(context.Background(), uuid.New(), attributes, WithGroupID(groupID))
+		require.NoError(t, err)
+
+		// Create another SessionManager to simulate a different node
+		sm2, err := NewSessionManager(ctx, cfg, db)
+		require.NoError(t, err)
+		defer sm2.Shutdown(context.Background())
+
+		// Ensure the session is in both caches
+		_, err = sm.GetSessionWithVersion(context.Background(), session.ID, 1)
+		require.NoError(t, err)
+		_, err = sm2.GetSessionWithVersion(context.Background(), session.ID, 1)
+		require.NoError(t, err)
+
+		// Delete all sessions by group ID
+		err = sm.DeleteAllSessionsByGroupID(context.Background(), groupID)
+		require.NoError(t, err)
+
+		// Wait a bit for the notification to propagate
+		time.Sleep(2 * time.Second)
+
+		// Verify that the session is removed from both caches
+		_, err = sm.GetSessionWithVersion(context.Background(), session.ID, 1)
+		assert.Error(t, err, "Session should have been deleted from sm")
+		_, err = sm2.GetSessionWithVersion(context.Background(), session.ID, 1)
+		assert.Error(t, err, "Session should have been deleted from sm2")
+	})
+}

@@ -27,9 +27,10 @@ import (
 )
 
 const (
-	NotificationTypeSessionsRemovalFromCache     = "sessions_removal_from_cache"
-	NotificationTypeUserSessionsRemovalFromCache = "user_sessions_removal_from_cache"
-	NotificationTypeClearEntireCache             = "clear_entire_cache"
+	NotificationTypeSessionsRemovalFromCache      = "sessions_removal_from_cache"
+	NotificationTypeUserSessionsRemovalFromCache  = "user_sessions_removal_from_cache"
+	NotificationTypeClearEntireCache              = "clear_entire_cache"
+	NotificationTypeGroupSessionsRemovalFromCache = "group_sessions_removal_from_cache"
 )
 
 // Config holds the configuration options for the SessionManager.
@@ -87,12 +88,13 @@ type SessionAttributeValue struct {
 }
 
 type Session struct {
-	ID           uuid.UUID `db:"id"`
-	UserID       uuid.UUID `db:"user_id"`
-	LastAccessed time.Time `db:"last_accessed"`
-	ExpiresAt    time.Time `db:"expires_at"`
-	UpdatedAt    time.Time `db:"updated_at"`
-	Version      int       `db:"version"`
+	ID           uuid.UUID  `db:"id"`
+	UserID       uuid.UUID  `db:"user_id"`
+	GroupID      *uuid.UUID `db:"group_id"`
+	LastAccessed time.Time  `db:"last_accessed"`
+	ExpiresAt    time.Time  `db:"expires_at"`
+	UpdatedAt    time.Time  `db:"updated_at"`
+	Version      int        `db:"version"`
 	attributes   map[string]SessionAttributeValue
 	changed      map[string]bool
 	deleted      map[string]bool
@@ -282,6 +284,7 @@ func (sm *SessionManager) createSchemaAndTables() error {
             CREATE TABLE IF NOT EXISTS %s (
                 "id" UUID PRIMARY KEY,
                 "user_id" UUID NOT NULL,
+				"group_id" UUID,
                 "last_accessed" TIMESTAMP WITH TIME ZONE NOT NULL,
                 "expires_at" TIMESTAMP WITH TIME ZONE NOT NULL,
                 "updated_at" TIMESTAMP WITH TIME ZONE NOT NULL,
@@ -318,8 +321,20 @@ func (sm *SessionManager) createSchemaAndTables() error {
 	return nil
 }
 
-// CreateSession creates a new session for the given user with the provided attributes.
-func (sm *SessionManager) CreateSession(ctx context.Context, userID uuid.UUID, attributes map[string]SessionAttributeValue) (*Session, error) {
+// CreateSessionOption is a function type that modifies Session during creation
+type CreateSessionOption func(*Session)
+
+// WithGroupID sets the GroupID for the session during creation
+func WithGroupID(groupID uuid.UUID) CreateSessionOption {
+	return func(s *Session) {
+		s.GroupID = &groupID
+	}
+}
+
+// ... (existing code)
+
+// CreateSession creates a new session for the given user with the provided attributes and optional group ID.
+func (sm *SessionManager) CreateSession(ctx context.Context, userID uuid.UUID, attributes map[string]SessionAttributeValue, opts ...CreateSessionOption) (*Session, error) {
 	sessionID, err := uuid.NewRandom()
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate UUID: %v", err)
@@ -347,9 +362,13 @@ func (sm *SessionManager) CreateSession(ctx context.Context, userID uuid.UUID, a
 		sm:           sm,
 	}
 
+	for _, opt := range opts {
+		opt(session)
+	}
+
 	query := fmt.Sprintf(`
-        INSERT INTO %s ("id", "user_id", "last_accessed", "expires_at", "updated_at", "version")
-        VALUES (:id, :user_id, :last_accessed, :expires_at, :updated_at, :version)
+        INSERT INTO %s ("id", "user_id", "group_id", "last_accessed", "expires_at", "updated_at", "version")
+        VALUES (:id, :user_id, :group_id, :last_accessed, :expires_at, :updated_at, :version)
     `, sm.getTableName("sessions"))
 
 	_, err = tx.NamedExecContext(ctx, query, session)
@@ -467,7 +486,7 @@ func (sm *SessionManager) GetSessionWithVersion(ctx context.Context, sessionID u
 	}
 
 	query := fmt.Sprintf(`
-        SELECT "id", "user_id", "last_accessed", "expires_at", "updated_at", "version"
+        SELECT "id", "user_id", "group_id", "last_accessed", "expires_at", "updated_at", "version"
             FROM %s
             WHERE "id" = $1
     `, sm.getTableName("sessions"))
@@ -761,6 +780,63 @@ func (sm *SessionManager) DeleteSession(ctx context.Context, sessionID uuid.UUID
 	return nil
 }
 
+// DeleteAllSessionsByGroupID deletes all sessions for a given group ID.
+func (sm *SessionManager) DeleteAllSessionsByGroupID(ctx context.Context, groupID uuid.UUID) error {
+	tx, err := sm.db.BeginTxx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %v", err)
+	}
+	defer tx.Rollback()
+
+	query := fmt.Sprintf(`
+        DELETE FROM %s
+        WHERE "group_id" = $1
+        RETURNING "id"
+    `, sm.getTableName("sessions"))
+
+	rows, err := tx.QueryContext(ctx, query, groupID)
+	if err != nil {
+		return fmt.Errorf("failed to delete group sessions: %v", err)
+	}
+	defer rows.Close()
+
+	var deletedSessionIDs []uuid.UUID
+	for rows.Next() {
+		var sessionID uuid.UUID
+		if err := rows.Scan(&sessionID); err != nil {
+			return fmt.Errorf("failed to scan deleted session ID: %v", err)
+		}
+		deletedSessionIDs = append(deletedSessionIDs, sessionID)
+	}
+
+	sessionIDStrings := make([]string, len(deletedSessionIDs))
+	for i, id := range deletedSessionIDs {
+		sessionIDStrings[i] = id.String()
+	}
+
+	err = sm.sendNotificationTx(tx, NotificationTypeGroupSessionsRemovalFromCache, []string{groupID.String()})
+	if err != nil {
+		return fmt.Errorf("failed to send notification: %v", err)
+	}
+
+	err = tx.Commit()
+	if err != nil {
+		return fmt.Errorf("failed to commit transaction: %v", err)
+	}
+
+	sm.mutex.Lock()
+	for _, sessionID := range deletedSessionIDs {
+		if item, exists := sm.cache[sessionID]; exists {
+			sm.removeFromUserSessionsIndex(item.session.UserID, sessionID)
+			sm.lru.Remove(item.element)
+			delete(sm.cache, sessionID)
+		}
+	}
+	sm.mutex.Unlock()
+
+	return nil
+}
+
 // DeleteAllSessions deletes all sessions from the database and cache.
 func (sm *SessionManager) DeleteAllSessions(ctx context.Context) error {
 	tx, err := sm.db.BeginTxx(ctx, nil)
@@ -974,6 +1050,21 @@ func (sm *SessionManager) handleNotification(channel string, payload string) {
 		sm.cache = make(map[uuid.UUID]*cacheItem)
 		sm.userSessionsIndex = make(map[uuid.UUID][]uuid.UUID)
 		sm.lru = list.New()
+		sm.mutex.Unlock()
+	case NotificationTypeGroupSessionsRemovalFromCache:
+		groupID, err := uuid.Parse(notification.Payload[0])
+		if err != nil {
+			log.Printf("Error parsing group ID: %v", err)
+			return
+		}
+		sm.mutex.Lock()
+		for sessionID, item := range sm.cache {
+			if item.session.GroupID != nil && *item.session.GroupID == groupID {
+				sm.removeFromUserSessionsIndex(item.session.UserID, sessionID)
+				sm.lru.Remove(item.element)
+				delete(sm.cache, sessionID)
+			}
+		}
 		sm.mutex.Unlock()
 	default:
 		log.Printf("Unknown notification type: %s", notification.Type)
@@ -1220,6 +1311,7 @@ func (s *Session) deepCopy() *Session {
 	return &Session{
 		ID:           s.ID,
 		UserID:       s.UserID,
+		GroupID:      s.GroupID,
 		LastAccessed: s.LastAccessed,
 		ExpiresAt:    s.ExpiresAt,
 		UpdatedAt:    s.UpdatedAt,
