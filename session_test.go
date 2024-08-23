@@ -1865,3 +1865,63 @@ func TestMaxSessionLifetimeInCache(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, cachedSession.IsFromCache())
 }
+
+func TestClearEntireCache(t *testing.T) {
+	ctx := context.Background()
+
+	// Start PostgreSQL container
+	postgres, db, _, err := startPostgresContainer(ctx)
+	require.NoError(t, err)
+	defer postgres.Terminate(ctx)
+
+	// Create multiple SessionManagers to simulate different nodes
+	cfg := DefaultConfig()
+	cfg.CreateSchemaIfMissing = true
+	cfg.CacheSize = 100
+	cfg.NotifyOnUpdates = true
+
+	sm1, err := NewSessionManager(ctx, cfg, db)
+	require.NoError(t, err)
+	defer sm1.Shutdown(context.Background())
+
+	sm2, err := NewSessionManager(ctx, cfg, db)
+	require.NoError(t, err)
+	defer sm2.Shutdown(context.Background())
+
+	// Create some sessions
+	userID := uuid.New()
+	attributes := map[string]SessionAttributeValue{
+		"key": {Value: "value"},
+	}
+
+	session1, err := sm1.CreateSession(ctx, userID, attributes)
+	require.NoError(t, err)
+
+	session2, err := sm2.CreateSession(ctx, userID, attributes)
+	require.NoError(t, err)
+
+	// Ensure sessions are in cache
+	cachedSession1, err := sm1.GetSession(ctx, session1.ID)
+	require.NoError(t, err)
+	assert.True(t, cachedSession1.IsFromCache())
+
+	cachedSession2, err := sm2.GetSession(ctx, session2.ID)
+	require.NoError(t, err)
+	assert.True(t, cachedSession2.IsFromCache())
+
+	// Clear entire cache
+	err = sm1.ClearEntireCache(ctx)
+	require.NoError(t, err)
+
+	// Wait a bit for the notification to propagate
+	time.Sleep(100 * time.Millisecond)
+
+	// Check that sessions are no longer in cache
+	refreshedSession1, err := sm1.GetSession(ctx, session1.ID)
+	require.NoError(t, err)
+	assert.False(t, refreshedSession1.IsFromCache())
+
+	refreshedSession2, err := sm2.GetSession(ctx, session2.ID)
+	require.NoError(t, err)
+	assert.False(t, refreshedSession2.IsFromCache())
+}

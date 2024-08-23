@@ -29,6 +29,7 @@ import (
 const (
 	NotificationTypeSessionsRemovalFromCache     = "sessions_removal_from_cache"
 	NotificationTypeUserSessionsRemovalFromCache = "user_sessions_removal_from_cache"
+	NotificationTypeClearEntireCache             = "clear_entire_cache"
 )
 
 // Config holds the configuration options for the SessionManager.
@@ -968,6 +969,12 @@ func (sm *SessionManager) handleNotification(channel string, payload string) {
 			delete(sm.userSessionsIndex, userID)
 		}
 		sm.mutex.Unlock()
+	case NotificationTypeClearEntireCache:
+		sm.mutex.Lock()
+		sm.cache = make(map[uuid.UUID]*cacheItem)
+		sm.userSessionsIndex = make(map[uuid.UUID][]uuid.UUID)
+		sm.lru = list.New()
+		sm.mutex.Unlock()
 	default:
 		log.Printf("Unknown notification type: %s", notification.Type)
 	}
@@ -1483,6 +1490,23 @@ func (sm *SessionManager) sendNotification(db *sqlx.DB, notificationType string,
 	_, err = db.ExecContext(context.Background(), notifyQuery.Query, notifyQuery.Params...)
 	if err != nil {
 		return fmt.Errorf("failed to send notification: %v", err)
+	}
+
+	return nil
+}
+
+// ClearEntireCache clears all sessions from the cache and notifies other nodes to do the same
+func (sm *SessionManager) ClearEntireCache(ctx context.Context) error {
+	sm.mutex.Lock()
+	sm.cache = make(map[uuid.UUID]*cacheItem)
+	sm.userSessionsIndex = make(map[uuid.UUID][]uuid.UUID)
+	sm.lru = list.New()
+	sm.mutex.Unlock()
+
+	// Send notification to clear cache on other nodes
+	err := sm.sendNotification(sm.db, NotificationTypeClearEntireCache, nil)
+	if err != nil {
+		return fmt.Errorf("failed to send clear cache notification: %v", err)
 	}
 
 	return nil

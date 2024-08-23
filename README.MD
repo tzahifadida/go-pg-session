@@ -915,6 +915,26 @@ Shuts down the session manager gracefully, ensuring all ongoing operations are c
 func (sm *SessionManager) Shutdown(ctx context.Context) error
 ```
 
+### `ClearEntireCache`
+
+Clears all sessions from the cache on the current node and notifies other nodes to do the same.
+
+```go
+func (sm *SessionManager) ClearEntireCache(ctx context.Context) error
+```
+
+This method is particularly useful in scenarios where you need to invalidate all cached sessions across all nodes, such as:
+
+- After a major data migration
+- In response to a security event
+- When deploying significant changes that affect session data
+
+Usage example:
+
+```go
+err := sessionManager.ClearEntireCache(context.Background())
+```
+
 ### Session Methods
 
 #### `UpdateAttribute`
