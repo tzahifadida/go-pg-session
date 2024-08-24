@@ -18,7 +18,7 @@ import (
 	"github.com/jmoiron/sqlx"
 	"github.com/jonboulle/clockwork"
 	"github.com/tzahifadida/pgln"
-	"log"
+	"log/slog"
 	"reflect"
 	"strconv"
 	"strings"
@@ -32,6 +32,12 @@ const (
 	NotificationTypeClearEntireCache              = "clear_entire_cache"
 	NotificationTypeGroupSessionsRemovalFromCache = "group_sessions_removal_from_cache"
 )
+
+// Logger defines the interface for logging operations.
+type Logger interface {
+	Warn(msg string, args ...any)
+	Error(msg string, args ...any)
+}
 
 // Config holds the configuration options for the SessionManager.
 type Config struct {
@@ -50,6 +56,7 @@ type Config struct {
 	NotifyOnFailedUpdates     bool
 	CustomPGLN                *pgln.PGListenNotify `json:"-"`
 	MaxSessionLifetimeInCache time.Duration        `json:"maxSessionLifetimeInCache"`
+	Logger                    Logger
 }
 
 // DefaultConfig returns a Config struct with default values.
@@ -69,6 +76,7 @@ func DefaultConfig() *Config {
 		NotifyOnUpdates:           true,
 		NotifyOnFailedUpdates:     false,
 		MaxSessionLifetimeInCache: 48 * time.Hour,
+		Logger:                    slog.Default(),
 	}
 }
 
@@ -156,6 +164,9 @@ func NewSessionManager(ctx context.Context, cfg *Config, db *sql.DB) (*SessionMa
 		cfg = DefaultConfig()
 	} else {
 		defaultCfg := DefaultConfig()
+		if cfg.Logger == nil {
+			cfg.Logger = defaultCfg.Logger
+		}
 		if cfg.MaxSessions == 0 {
 			cfg.MaxSessions = defaultCfg.MaxSessions
 		}
@@ -230,7 +241,7 @@ func NewSessionManager(ctx context.Context, cfg *Config, db *sql.DB) (*SessionMa
 	err = sm.pgln.ListenAndWaitForListening(channelName, pgln.ListenOptions{
 		NotificationCallback: sm.handleNotification,
 		ErrorCallback: func(channel string, err error) {
-			log.Printf("Warning PGLN error (this may be fine if your loadbalancer or db connection lifetime is preset) on channel %s: %v", channel, err)
+			sm.Config.Logger.Warn(fmt.Sprintf("Warning PGLN error (this may be fine if your loadbalancer or db connection lifetime is preset) on channel %s", channel), "error", err)
 			sm.mutex.Lock()
 			sm.outOfSync = true
 			sm.mutex.Unlock()
@@ -995,7 +1006,7 @@ func (sm *SessionManager) handleNotification(channel string, payload string) {
 	var notification sessionNotification
 	err := json.Unmarshal([]byte(payload), &notification)
 	if err != nil {
-		log.Printf("Error unmarshalling notification: %v", err)
+		sm.Config.Logger.Error("Error unmarshalling notification", "error", err)
 		return
 	}
 
@@ -1011,7 +1022,7 @@ func (sm *SessionManager) handleNotification(channel string, payload string) {
 		for _, sessionIDStr := range notification.Payload {
 			sessionID, err := uuid.Parse(sessionIDStr)
 			if err != nil {
-				log.Printf("Error parsing session ID: %v", err)
+				sm.Config.Logger.Error("Error parsing session ID", "error", err)
 				continue
 			}
 			if _, exists := sm.cache[sessionID]; exists {
@@ -1031,7 +1042,7 @@ func (sm *SessionManager) handleNotification(channel string, payload string) {
 	case NotificationTypeUserSessionsRemovalFromCache:
 		userID, err := uuid.Parse(notification.Payload[0])
 		if err != nil {
-			log.Printf("Error parsing user ID: %v", err)
+			sm.Config.Logger.Error("Error parsing user ID", "error", err)
 			return
 		}
 		sm.mutex.Lock()
@@ -1054,7 +1065,7 @@ func (sm *SessionManager) handleNotification(channel string, payload string) {
 	case NotificationTypeGroupSessionsRemovalFromCache:
 		groupID, err := uuid.Parse(notification.Payload[0])
 		if err != nil {
-			log.Printf("Error parsing group ID: %v", err)
+			sm.Config.Logger.Error("Error parsing group ID", "error", err)
 			return
 		}
 		sm.mutex.Lock()
@@ -1067,12 +1078,12 @@ func (sm *SessionManager) handleNotification(channel string, payload string) {
 		}
 		sm.mutex.Unlock()
 	default:
-		log.Printf("Unknown notification type: %s", notification.Type)
+		sm.Config.Logger.Error(fmt.Sprintf("Unknown notification type: %s", notification.Type))
 	}
 }
 
 func (sm *SessionManager) handleOutOfSync(channel string) error {
-	log.Printf("Out of sync detected on channel %s, refreshing cache", channel)
+	sm.Config.Logger.Warn(fmt.Sprintf("Out of sync detected on channel %s, refreshing cache", channel))
 	return sm.refreshCache(context.Background())
 }
 
@@ -1333,7 +1344,7 @@ func (sm *SessionManager) cleanupWorker() {
 		select {
 		case <-ticker.Chan():
 			if err := sm.cleanupExpiredSessions(context.Background()); err != nil {
-				log.Printf("Error cleaning up expired sessions: %v", err)
+				sm.Config.Logger.Error("Error cleaning up expired sessions", "error", err)
 			}
 		case <-sm.shutdownChan:
 			return
@@ -1391,7 +1402,7 @@ func (sm *SessionManager) cleanupExpiredSessions(ctx context.Context) error {
 		}
 		err = sm.sendNotification(sm.db, NotificationTypeSessionsRemovalFromCache, sessionIDStrings)
 		if err != nil {
-			log.Printf("Failed to send notification for expired sessions: %v", err)
+			sm.Config.Logger.Error("Failed to send notification for expired sessions", "error", err)
 		}
 	}
 
@@ -1419,7 +1430,7 @@ func (sm *SessionManager) enforceMaxSessions(ctx context.Context, userID uuid.UU
 	var deletedSessionIDs []uuid.UUID
 	err := sm.db.SelectContext(ctx, &deletedSessionIDs, query, userID, sm.Config.MaxSessions)
 	if err != nil {
-		log.Printf("Failed to enforce max sessions: %v", err)
+		sm.Config.Logger.Error("Failed to enforce max sessions", "error", err)
 		return
 	}
 
@@ -1440,7 +1451,7 @@ func (sm *SessionManager) enforceMaxSessions(ctx context.Context, userID uuid.UU
 		}
 		err = sm.sendNotification(sm.db, NotificationTypeSessionsRemovalFromCache, sessionIDStrings)
 		if err != nil {
-			log.Printf("Failed to send notification for enforced max sessions: %v", err)
+			sm.Config.Logger.Error("Failed to send notification for enforced max sessions", "error", err)
 		}
 	}
 }
@@ -1495,7 +1506,7 @@ func (sm *SessionManager) processLastAccessUpdates() {
 
 		err := sm.processBatch(ctx, chunk, updates)
 		if err != nil {
-			log.Printf("Failed to process batch: %v", err)
+			sm.Config.Logger.Error("Failed to process batch", "error", err)
 			// Add unprocessed updates back to lastAccessUpdates
 			sm.lastAccessUpdateMutex.Lock()
 			for _, sessionID := range chunk {
