@@ -965,7 +965,7 @@ err := session.UpdateAttribute("temporary_flag", true, gopgsession.WithExpiresAt
 Deletes an attribute from the session.
 
 ```go
-func (s *Session) DeleteAttribute(key string)
+func (s *Session) DeleteAttribute(key string) error
 ```
 
 #### `GetAttributes`

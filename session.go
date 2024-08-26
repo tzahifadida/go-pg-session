@@ -108,6 +108,17 @@ type Session struct {
 	deleted      map[string]bool
 	sm           *SessionManager
 	fromCache    bool
+	invalidated  bool
+}
+
+// Invalidate marks the session as invalidated
+func (s *Session) Invalidate() {
+	s.invalidated = true
+}
+
+// IsInvalidated returns true if the session has been invalidated
+func (s *Session) IsInvalidated() bool {
+	return s.invalidated
 }
 
 // IsFromCache returns true if the session was loaded from the cache,
@@ -574,6 +585,10 @@ func (sm *SessionManager) UpdateSession(ctx context.Context, session *Session, o
 	opts := UpdateSessionOptions{}
 	for _, option := range options {
 		option(&opts)
+	}
+
+	if session.IsInvalidated() {
+		return nil, fmt.Errorf("cannot update an invalidated session")
 	}
 
 	tx, err := sm.db.BeginTxx(ctx, nil)
@@ -1185,6 +1200,10 @@ func WithExpiresAt(expiresAt time.Time) UpdateAttributeOption {
 
 // UpdateAttribute sets or updates an attribute for the session.
 func (s *Session) UpdateAttribute(key string, value interface{}, options ...UpdateAttributeOption) error {
+	if s.IsInvalidated() {
+		return fmt.Errorf("cannot update attribute of an invalidated session")
+	}
+
 	opts := UpdateAttributeOptions{}
 	for _, option := range options {
 		option(&opts)
@@ -1211,9 +1230,15 @@ func (s *Session) UpdateAttribute(key string, value interface{}, options ...Upda
 }
 
 // DeleteAttribute removes an attribute from the session.
-func (s *Session) DeleteAttribute(key string) {
+func (s *Session) DeleteAttribute(key string) error {
+	if s.IsInvalidated() {
+		return fmt.Errorf("cannot delete attribute of an invalidated session")
+	}
+
 	delete(s.attributes, key)
 	s.deleted[key] = true
+
+	return nil
 }
 
 // GetAttributes returns all attributes of the session.
@@ -1332,6 +1357,7 @@ func (s *Session) deepCopy() *Session {
 		deleted:      copiedDeleted,
 		sm:           s.sm,
 		fromCache:    s.fromCache,
+		invalidated:  s.invalidated,
 	}
 }
 

@@ -2053,3 +2053,96 @@ func TestGroupIDFunctionality(t *testing.T) {
 		assert.Error(t, err, "Session should have been deleted from sm2")
 	})
 }
+
+func TestSessionInvalidation(t *testing.T) {
+	ctx := context.Background()
+
+	// Start PostgreSQL container
+	postgres, db, _, err := startPostgresContainer(ctx)
+	require.NoError(t, err)
+	defer postgres.Terminate(ctx)
+
+	// Create a new SessionManager
+	cfg := DefaultConfig()
+	cfg.CreateSchemaIfMissing = true
+	cfg.CacheSize = 100
+
+	sm, err := NewSessionManager(ctx, cfg, db)
+	require.NoError(t, err)
+	defer sm.Shutdown(context.Background())
+
+	t.Run("InvalidateSession", func(t *testing.T) {
+		userID := uuid.New()
+		attributes := map[string]SessionAttributeValue{
+			"key": {Value: "value", Marshaled: false},
+		}
+
+		// Create a session
+		session, err := sm.CreateSession(context.Background(), userID, attributes)
+		require.NoError(t, err)
+
+		// Invalidate the session
+		session.Invalidate()
+		assert.True(t, session.IsInvalidated())
+
+		// Try to update an attribute of the invalidated session
+		err = session.UpdateAttribute("key", "new_value")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "cannot update attribute of an invalidated session")
+
+		// Try to delete an attribute of the invalidated session
+		err = session.DeleteAttribute("key")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "cannot delete attribute of an invalidated session")
+
+		// Try to update the invalidated session
+		_, err = sm.UpdateSession(context.Background(), session)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "cannot update an invalidated session")
+
+		// Verify that the session was not updated in the database
+		retrievedSession, err := sm.GetSessionWithVersion(context.Background(), session.ID, session.Version)
+		require.NoError(t, err)
+		attr, exists := retrievedSession.GetAttribute("key")
+		assert.True(t, exists)
+		assert.Equal(t, "value", attr.Value)
+
+		// Verify that we can still delete the invalidated session
+		err = sm.DeleteSession(context.Background(), session.ID)
+		assert.NoError(t, err)
+	})
+
+	t.Run("InvalidateSessionThenGet", func(t *testing.T) {
+		userID := uuid.New()
+		attributes := map[string]SessionAttributeValue{
+			"key": {Value: "value", Marshaled: false},
+		}
+
+		// Create a session
+		session, err := sm.CreateSession(context.Background(), userID, attributes)
+		require.NoError(t, err)
+
+		// Invalidate the session
+		session.Invalidate()
+		assert.True(t, session.IsInvalidated())
+
+		// Get the session again
+		retrievedSession, err := sm.GetSessionWithVersion(context.Background(), session.ID, session.Version)
+		require.NoError(t, err)
+
+		// The retrieved session should not be invalidated (as invalidation is not stored in the database)
+		assert.False(t, retrievedSession.IsInvalidated())
+
+		// We should be able to update attributes on the retrieved session
+		err = retrievedSession.UpdateAttribute("key", "new_value")
+		assert.NoError(t, err)
+
+		// We should be able to delete attributes on the retrieved session
+		err = retrievedSession.DeleteAttribute("key")
+		assert.NoError(t, err)
+
+		// We should be able to update the retrieved session
+		_, err = sm.UpdateSession(context.Background(), retrievedSession)
+		assert.NoError(t, err)
+	})
+}

@@ -264,7 +264,10 @@ func (dl *DistributedLock) Unlock(ctx context.Context) error {
 		return ErrLockNotHeld
 	}
 
-	session.DeleteAttribute(dl.lockAttributeKey())
+	err = session.DeleteAttribute(dl.lockAttributeKey())
+	if err != nil {
+		return fmt.Errorf("failed to unlock when deleteing an attribute in the session: %w", err)
+	}
 
 	_, err = dl.sm.UpdateSession(ctx, session, WithCheckAttributeVersion(), WithDoNotNotify())
 	if err != nil {
