@@ -208,7 +208,7 @@ func NewSessionManager(ctx context.Context, cfg *Config, db *sql.DB) (*SessionMa
 
 	nodeID, err := uuid.NewRandom()
 	if err != nil {
-		return nil, fmt.Errorf("failed to generate node ID: %v", err)
+		return nil, fmt.Errorf("failed to generate node ID: %w", err)
 	}
 
 	sm := &SessionManager{
@@ -239,12 +239,12 @@ func NewSessionManager(ctx context.Context, cfg *Config, db *sql.DB) (*SessionMa
 
 		sm.pgln, err = builder.Build()
 		if err != nil {
-			return nil, fmt.Errorf("failed to initialize pgln: %v", err)
+			return nil, fmt.Errorf("failed to initialize pgln: %w", err)
 		}
 
 		err = sm.pgln.Start()
 		if err != nil {
-			return nil, fmt.Errorf("failed to start pgln: %v", err)
+			return nil, fmt.Errorf("failed to start pgln: %w", err)
 		}
 	}
 
@@ -260,7 +260,7 @@ func NewSessionManager(ctx context.Context, cfg *Config, db *sql.DB) (*SessionMa
 		OutOfSyncBlockingCallback: sm.handleOutOfSync,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to listen on channel: %v", err)
+		return nil, fmt.Errorf("failed to listen on channel: %w", err)
 	}
 
 	sm.wg.Add(2)
@@ -283,7 +283,7 @@ func (sm *SessionManager) checkTables() error {
 	}
 	err := sm.db.QueryRow(query, schemaName, sm.Config.TablePrefix+"sessions").Scan(&count)
 	if err != nil {
-		return fmt.Errorf("failed to check if tables exist: %v", err)
+		return fmt.Errorf("failed to check if tables exist: %w", err)
 	}
 	if count == 0 {
 		if sm.Config.CreateSchemaIfMissing {
@@ -359,7 +359,7 @@ func WithGroupID(groupID uuid.UUID) CreateSessionOption {
 func (sm *SessionManager) CreateSession(ctx context.Context, userID uuid.UUID, attributes map[string]SessionAttributeValue, opts ...CreateSessionOption) (*Session, error) {
 	sessionID, err := uuid.NewRandom()
 	if err != nil {
-		return nil, fmt.Errorf("failed to generate UUID: %v", err)
+		return nil, fmt.Errorf("failed to generate UUID: %w", err)
 	}
 
 	now := sm.clock.Now()
@@ -367,7 +367,7 @@ func (sm *SessionManager) CreateSession(ctx context.Context, userID uuid.UUID, a
 
 	tx, err := sm.db.BeginTxx(ctx, nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to begin transaction: %v", err)
+		return nil, fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer tx.Rollback()
 
@@ -395,7 +395,7 @@ func (sm *SessionManager) CreateSession(ctx context.Context, userID uuid.UUID, a
 
 	_, err = tx.NamedExecContext(ctx, query, session)
 	if err != nil {
-		return nil, fmt.Errorf("failed to insert session: %v", err)
+		return nil, fmt.Errorf("failed to insert session: %w", err)
 	}
 
 	attributeVersions := make(map[string]int)
@@ -423,7 +423,7 @@ func (sm *SessionManager) CreateSession(ctx context.Context, userID uuid.UUID, a
 
 		_, err = tx.NamedExecContext(ctx, query, attributeRecord)
 		if err != nil {
-			return nil, fmt.Errorf("failed to insert session attribute: %v", err)
+			return nil, fmt.Errorf("failed to insert session attribute: %w", err)
 		}
 		attributeVersions[key] = 1
 	}
@@ -438,7 +438,7 @@ func (sm *SessionManager) CreateSession(ctx context.Context, userID uuid.UUID, a
 
 	err = tx.Commit()
 	if err != nil {
-		return nil, fmt.Errorf("failed to commit transaction: %v", err)
+		return nil, fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
 	go sm.enforceMaxSessions(sm.ctx, userID)
@@ -519,12 +519,12 @@ func (sm *SessionManager) GetSessionWithVersion(ctx context.Context, sessionID u
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("session not found")
 		}
-		return nil, fmt.Errorf("failed to get session: %v", err)
+		return nil, fmt.Errorf("failed to get session: %w", err)
 	}
 
 	attributes, err := sm.listAttributes(ctx, sessionID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list attributes: %v", err)
+		return nil, fmt.Errorf("failed to list attributes: %w", err)
 	}
 	session.attributes = attributes
 	session.changed = make(map[string]bool)
@@ -593,7 +593,7 @@ func (sm *SessionManager) UpdateSession(ctx context.Context, session *Session, o
 
 	tx, err := sm.db.BeginTxx(ctx, nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to begin transaction: %v", err)
+		return nil, fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer tx.Rollback()
 
@@ -654,7 +654,7 @@ func (sm *SessionManager) UpdateSession(ctx context.Context, session *Session, o
 				if err == sql.ErrNoRows && opts.CheckAttributeVersion {
 					return nil, fmt.Errorf("attribute %s version mismatch or not found", key)
 				}
-				return nil, fmt.Errorf("failed to update session attribute: %v", err)
+				return nil, fmt.Errorf("failed to update session attribute: %w", err)
 			}
 
 			attr.Version = newVersion
@@ -675,13 +675,13 @@ func (sm *SessionManager) UpdateSession(ctx context.Context, session *Session, o
 
 		query, args, err := sqlx.In(query, session.ID, deletedKeys)
 		if err != nil {
-			return nil, fmt.Errorf("failed to expand IN clause: %v", err)
+			return nil, fmt.Errorf("failed to expand IN clause: %w", err)
 		}
 		query = tx.Rebind(query)
 
 		_, err = tx.ExecContext(ctx, query, args...)
 		if err != nil {
-			return nil, fmt.Errorf("failed to delete session attributes: %v", err)
+			return nil, fmt.Errorf("failed to delete session attributes: %w", err)
 		}
 	}
 
@@ -726,19 +726,19 @@ func (sm *SessionManager) UpdateSession(ctx context.Context, session *Session, o
 			if sm.Config.NotifyOnFailedUpdates && sm.Config.NotifyOnUpdates && !opts.DoNotNotify {
 				err = sm.sendNotification(sm.db, NotificationTypeSessionsRemovalFromCache, []string{session.ID.String()})
 				if err != nil {
-					return nil, fmt.Errorf("failed to send notification: %v", err)
+					return nil, fmt.Errorf("failed to send notification: %w", err)
 				}
 			}
 
 			return nil, ErrSessionVersionIsOutdated
 		}
-		return nil, fmt.Errorf("failed to update session: %v", err)
+		return nil, fmt.Errorf("failed to update session: %w", err)
 	}
 
 	if sm.Config.NotifyOnUpdates && !opts.DoNotNotify {
 		err = sm.sendNotificationTx(tx, NotificationTypeSessionsRemovalFromCache, []string{session.ID.String()})
 		if err != nil {
-			return nil, fmt.Errorf("failed to send notification after update: %v", err)
+			return nil, fmt.Errorf("failed to send notification after update: %w", err)
 		}
 	}
 
@@ -749,7 +749,7 @@ func (sm *SessionManager) UpdateSession(ctx context.Context, session *Session, o
 
 	err = tx.Commit()
 	if err != nil {
-		return nil, fmt.Errorf("failed to commit transaction: %v", err)
+		return nil, fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
 	if updatedSession.Version == session.Version+1 {
@@ -771,7 +771,7 @@ func (sm *SessionManager) UpdateSession(ctx context.Context, session *Session, o
 func (sm *SessionManager) DeleteSession(ctx context.Context, sessionID uuid.UUID) error {
 	tx, err := sm.db.BeginTxx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %v", err)
+		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer tx.Rollback()
 
@@ -782,17 +782,17 @@ func (sm *SessionManager) DeleteSession(ctx context.Context, sessionID uuid.UUID
 
 	_, err = tx.ExecContext(ctx, query, sessionID)
 	if err != nil {
-		return fmt.Errorf("failed to delete session: %v", err)
+		return fmt.Errorf("failed to delete session: %w", err)
 	}
 
 	err = sm.sendNotificationTx(tx, NotificationTypeSessionsRemovalFromCache, []string{sessionID.String()})
 	if err != nil {
-		return fmt.Errorf("failed to send notification: %v", err)
+		return fmt.Errorf("failed to send notification: %w", err)
 	}
 
 	err = tx.Commit()
 	if err != nil {
-		return fmt.Errorf("failed to commit transaction: %v", err)
+		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
 	sm.mutex.Lock()
@@ -810,7 +810,7 @@ func (sm *SessionManager) DeleteSession(ctx context.Context, sessionID uuid.UUID
 func (sm *SessionManager) DeleteAllSessionsByGroupID(ctx context.Context, groupID uuid.UUID) error {
 	tx, err := sm.db.BeginTxx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %v", err)
+		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer tx.Rollback()
 
@@ -822,7 +822,7 @@ func (sm *SessionManager) DeleteAllSessionsByGroupID(ctx context.Context, groupI
 
 	rows, err := tx.QueryContext(ctx, query, groupID)
 	if err != nil {
-		return fmt.Errorf("failed to delete group sessions: %v", err)
+		return fmt.Errorf("failed to delete group sessions: %w", err)
 	}
 	defer rows.Close()
 
@@ -830,7 +830,7 @@ func (sm *SessionManager) DeleteAllSessionsByGroupID(ctx context.Context, groupI
 	for rows.Next() {
 		var sessionID uuid.UUID
 		if err := rows.Scan(&sessionID); err != nil {
-			return fmt.Errorf("failed to scan deleted session ID: %v", err)
+			return fmt.Errorf("failed to scan deleted session ID: %w", err)
 		}
 		deletedSessionIDs = append(deletedSessionIDs, sessionID)
 	}
@@ -842,12 +842,12 @@ func (sm *SessionManager) DeleteAllSessionsByGroupID(ctx context.Context, groupI
 
 	err = sm.sendNotificationTx(tx, NotificationTypeGroupSessionsRemovalFromCache, []string{groupID.String()})
 	if err != nil {
-		return fmt.Errorf("failed to send notification: %v", err)
+		return fmt.Errorf("failed to send notification: %w", err)
 	}
 
 	err = tx.Commit()
 	if err != nil {
-		return fmt.Errorf("failed to commit transaction: %v", err)
+		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
 	sm.mutex.Lock()
@@ -867,7 +867,7 @@ func (sm *SessionManager) DeleteAllSessionsByGroupID(ctx context.Context, groupI
 func (sm *SessionManager) DeleteAllSessions(ctx context.Context) error {
 	tx, err := sm.db.BeginTxx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %v", err)
+		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer tx.Rollback()
 
@@ -878,7 +878,7 @@ func (sm *SessionManager) DeleteAllSessions(ctx context.Context) error {
 
 	rows, err := tx.QueryContext(ctx, query)
 	if err != nil {
-		return fmt.Errorf("failed to delete user sessions: %v", err)
+		return fmt.Errorf("failed to delete user sessions: %w", err)
 	}
 	defer rows.Close()
 
@@ -886,7 +886,7 @@ func (sm *SessionManager) DeleteAllSessions(ctx context.Context) error {
 	for rows.Next() {
 		var sessionID uuid.UUID
 		if err := rows.Scan(&sessionID); err != nil {
-			return fmt.Errorf("failed to scan deleted session ID: %v", err)
+			return fmt.Errorf("failed to scan deleted session ID: %w", err)
 		}
 		deletedSessionIDs = append(deletedSessionIDs, sessionID)
 	}
@@ -898,12 +898,12 @@ func (sm *SessionManager) DeleteAllSessions(ctx context.Context) error {
 
 	err = sm.sendNotificationTx(tx, NotificationTypeSessionsRemovalFromCache, sessionIDStrings)
 	if err != nil {
-		return fmt.Errorf("failed to send notification: %v", err)
+		return fmt.Errorf("failed to send notification: %w", err)
 	}
 
 	err = tx.Commit()
 	if err != nil {
-		return fmt.Errorf("failed to commit transaction: %v", err)
+		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
 	sm.mutex.Lock()
@@ -923,7 +923,7 @@ func (sm *SessionManager) DeleteAllSessions(ctx context.Context) error {
 func (sm *SessionManager) DeleteAllUserSessions(ctx context.Context, userID uuid.UUID) error {
 	tx, err := sm.db.BeginTxx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %v", err)
+		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer tx.Rollback()
 
@@ -935,7 +935,7 @@ func (sm *SessionManager) DeleteAllUserSessions(ctx context.Context, userID uuid
 
 	rows, err := tx.QueryContext(ctx, query, userID)
 	if err != nil {
-		return fmt.Errorf("failed to delete user sessions: %v", err)
+		return fmt.Errorf("failed to delete user sessions: %w", err)
 	}
 	defer rows.Close()
 
@@ -943,7 +943,7 @@ func (sm *SessionManager) DeleteAllUserSessions(ctx context.Context, userID uuid
 	for rows.Next() {
 		var sessionID uuid.UUID
 		if err := rows.Scan(&sessionID); err != nil {
-			return fmt.Errorf("failed to scan deleted session ID: %v", err)
+			return fmt.Errorf("failed to scan deleted session ID: %w", err)
 		}
 		deletedSessionIDs = append(deletedSessionIDs, sessionID)
 	}
@@ -955,12 +955,12 @@ func (sm *SessionManager) DeleteAllUserSessions(ctx context.Context, userID uuid
 
 	err = sm.sendNotificationTx(tx, NotificationTypeSessionsRemovalFromCache, sessionIDStrings)
 	if err != nil {
-		return fmt.Errorf("failed to send notification: %v", err)
+		return fmt.Errorf("failed to send notification: %w", err)
 	}
 
 	err = tx.Commit()
 	if err != nil {
-		return fmt.Errorf("failed to commit transaction: %v", err)
+		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
 	sm.mutex.Lock()
@@ -985,7 +985,7 @@ func (sm *SessionManager) listAttributes(ctx context.Context, sessionID uuid.UUI
 
 	rows, err := sm.db.QueryxContext(ctx, query, sessionID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query session attributes: %v", err)
+		return nil, fmt.Errorf("failed to query session attributes: %w", err)
 	}
 	defer rows.Close()
 
@@ -996,7 +996,7 @@ func (sm *SessionManager) listAttributes(ctx context.Context, sessionID uuid.UUI
 		var version int
 		err := rows.Scan(&key, &value, &expiresAt, &version)
 		if err != nil {
-			return nil, fmt.Errorf("failed to scan attribute row: %v", err)
+			return nil, fmt.Errorf("failed to scan attribute row: %w", err)
 		}
 		attributes[key] = SessionAttributeValue{Value: value, ExpiresAt: expiresAt, Marshaled: true, Version: version}
 	}
@@ -1156,7 +1156,7 @@ func (sm *SessionManager) refreshCache(ctx context.Context) error {
 
 	rows, err := sm.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return fmt.Errorf("failed to query sessions to refresh: %v", err)
+		return fmt.Errorf("failed to query sessions to refresh: %w", err)
 	}
 	defer rows.Close()
 
@@ -1164,7 +1164,7 @@ func (sm *SessionManager) refreshCache(ctx context.Context) error {
 	for rows.Next() {
 		var id uuid.UUID
 		if err := rows.Scan(&id); err != nil {
-			return fmt.Errorf("failed to scan session id: %v", err)
+			return fmt.Errorf("failed to scan session id: %w", err)
 		}
 		toRemoveIDs = append(toRemoveIDs, id)
 	}
@@ -1211,7 +1211,7 @@ func (s *Session) UpdateAttribute(key string, value interface{}, options ...Upda
 
 	valueStr, err := convertToString(value)
 	if err != nil {
-		return fmt.Errorf("failed to convert attribute to string: %v", err)
+		return fmt.Errorf("failed to convert attribute to string: %w", err)
 	}
 	if len(valueStr) > s.sm.Config.MaxAttributeLength {
 		return fmt.Errorf("attribute value for key %s exceeds max length of %d", key, s.sm.Config.MaxAttributeLength)
@@ -1398,7 +1398,7 @@ func (sm *SessionManager) cleanupExpiredSessions(ctx context.Context) error {
 
 	rows, err := sm.db.QueryContext(ctx, query, now, now.Add(-sm.Config.InactivityDuration))
 	if err != nil {
-		return fmt.Errorf("failed to delete expired sessions and attributes: %v", err)
+		return fmt.Errorf("failed to delete expired sessions and attributes: %w", err)
 	}
 	defer rows.Close()
 
@@ -1406,7 +1406,7 @@ func (sm *SessionManager) cleanupExpiredSessions(ctx context.Context) error {
 	for rows.Next() {
 		var sessionID uuid.UUID
 		if err := rows.Scan(&sessionID); err != nil {
-			return fmt.Errorf("failed to scan deleted session ID: %v", err)
+			return fmt.Errorf("failed to scan deleted session ID: %w", err)
 		}
 		deletedSessionIDs = append(deletedSessionIDs, sessionID)
 	}
@@ -1548,7 +1548,7 @@ func (sm *SessionManager) processLastAccessUpdates() {
 func (sm *SessionManager) processBatch(ctx context.Context, sessionIDs []uuid.UUID, updates map[uuid.UUID]time.Time) error {
 	tx, err := sm.db.BeginTxx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %v", err)
+		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer tx.Rollback()
 
@@ -1571,12 +1571,12 @@ func (sm *SessionManager) processBatch(ctx context.Context, sessionIDs []uuid.UU
 
 	_, err = tx.ExecContext(ctx, query, args...)
 	if err != nil {
-		return fmt.Errorf("failed to execute batch update: %v", err)
+		return fmt.Errorf("failed to execute batch update: %w", err)
 	}
 
 	err = tx.Commit()
 	if err != nil {
-		return fmt.Errorf("failed to commit transaction: %v", err)
+		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
 	return nil
@@ -1591,13 +1591,13 @@ func (sm *SessionManager) sendNotificationTx(tx *sqlx.Tx, notificationType strin
 
 	notificationJSON, err := json.Marshal(notification)
 	if err != nil {
-		return fmt.Errorf("failed to marshal notification: %v", err)
+		return fmt.Errorf("failed to marshal notification: %w", err)
 	}
 
 	notifyQuery := sm.pgln.NotifyQuery(sm.getChannelName("session_updates"), string(notificationJSON))
 	_, err = tx.ExecContext(context.Background(), notifyQuery.Query, notifyQuery.Params...)
 	if err != nil {
-		return fmt.Errorf("failed to send notification: %v", err)
+		return fmt.Errorf("failed to send notification: %w", err)
 	}
 
 	return nil
@@ -1612,13 +1612,13 @@ func (sm *SessionManager) sendNotification(db *sqlx.DB, notificationType string,
 
 	notificationJSON, err := json.Marshal(notification)
 	if err != nil {
-		return fmt.Errorf("failed to marshal notification: %v", err)
+		return fmt.Errorf("failed to marshal notification: %w", err)
 	}
 
 	notifyQuery := sm.pgln.NotifyQuery(sm.getChannelName("session_updates"), string(notificationJSON))
 	_, err = db.ExecContext(context.Background(), notifyQuery.Query, notifyQuery.Params...)
 	if err != nil {
-		return fmt.Errorf("failed to send notification: %v", err)
+		return fmt.Errorf("failed to send notification: %w", err)
 	}
 
 	return nil
@@ -1635,7 +1635,7 @@ func (sm *SessionManager) ClearEntireCache(ctx context.Context) error {
 	// Send notification to clear cache on other nodes
 	err := sm.sendNotification(sm.db, NotificationTypeClearEntireCache, nil)
 	if err != nil {
-		return fmt.Errorf("failed to send clear cache notification: %v", err)
+		return fmt.Errorf("failed to send clear cache notification: %w", err)
 	}
 
 	return nil
@@ -1671,12 +1671,12 @@ func (sm *SessionManager) ParseSessionIDAndVersion(encodedData string) (uuid.UUI
 
 	sessionID, err := uuid.Parse(parts[0])
 	if err != nil {
-		return uuid.Nil, 0, fmt.Errorf("invalid session ID: %v", err)
+		return uuid.Nil, 0, fmt.Errorf("invalid session ID: %w", err)
 	}
 
 	version, err := strconv.Atoi(parts[1])
 	if err != nil {
-		return uuid.Nil, 0, fmt.Errorf("invalid version: %v", err)
+		return uuid.Nil, 0, fmt.Errorf("invalid version: %w", err)
 	}
 
 	return sessionID, version, nil
@@ -1786,7 +1786,7 @@ func (sm *SessionManager) evictOldestSession() {
 func (sm *SessionManager) DeleteAttributeFromAllUserSessions(ctx context.Context, userID uuid.UUID, attributeKey string) error {
 	tx, err := sm.db.BeginTxx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %v", err)
+		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer tx.Rollback()
 
@@ -1811,17 +1811,17 @@ func (sm *SessionManager) DeleteAttributeFromAllUserSessions(ctx context.Context
 
 	_, err = tx.ExecContext(ctx, query, userID, attributeKey, sm.clock.Now())
 	if err != nil {
-		return fmt.Errorf("failed to execute delete and update query: %v", err)
+		return fmt.Errorf("failed to execute delete and update query: %w", err)
 	}
 
 	err = sm.sendNotificationTx(tx, NotificationTypeUserSessionsRemovalFromCache, []string{userID.String()})
 	if err != nil {
-		return fmt.Errorf("failed to send notification: %v", err)
+		return fmt.Errorf("failed to send notification: %w", err)
 	}
 
 	err = tx.Commit()
 	if err != nil {
-		return fmt.Errorf("failed to commit transaction: %v", err)
+		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
 	sm.mutex.Lock()
