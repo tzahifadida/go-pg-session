@@ -690,7 +690,7 @@ func (sm *SessionManager) UpdateSession(ctx context.Context, session *Session, o
         UPDATE %s
         SET "updated_at" = $1, "version" = "version" + 1
         WHERE "id" = $2%s 
-        RETURNING "id", "user_id", "last_accessed", "expires_at", "updated_at", "version"
+        RETURNING "id", "user_id", "group_id", "last_accessed", "expires_at", "updated_at", "version"
     `
 	var updateQuery string
 	var updateQueryRow *sql.Row
@@ -706,6 +706,7 @@ func (sm *SessionManager) UpdateSession(ctx context.Context, session *Session, o
 	err = updateQueryRow.Scan(
 		&updatedSession.ID,
 		&updatedSession.UserID,
+		&updatedSession.GroupID,
 		&updatedSession.LastAccessed,
 		&updatedSession.ExpiresAt,
 		&updatedSession.UpdatedAt,

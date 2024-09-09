@@ -1953,6 +1953,16 @@ func TestGroupIDFunctionality(t *testing.T) {
 		session, err := sm.CreateSession(context.Background(), userID, attributes, WithGroupID(groupID))
 		require.NoError(t, err)
 		assert.NotEqual(t, uuid.Nil, session.ID)
+		assert.NotEqual(t, uuid.Nil, session.GroupID)
+		assert.Equal(t, groupID, *session.GroupID)
+
+		session.UpdateAttribute("att1", 123)
+		sm.UpdateSession(ctx, session)
+		session, err = sm.GetSession(ctx, session.ID)
+		require.NoError(t, err)
+		assert.NotEqual(t, uuid.Nil, session.ID)
+		require.NotNil(t, session.GroupID)
+		assert.NotEqual(t, uuid.Nil, session.GroupID)
 		assert.Equal(t, groupID, *session.GroupID)
 
 		// Retrieve the session and verify the group ID
