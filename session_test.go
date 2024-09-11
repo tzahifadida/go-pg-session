@@ -1984,6 +1984,62 @@ func TestGroupIDFunctionality(t *testing.T) {
 		assert.Nil(t, retrievedSessionWithoutGroup.GroupID)
 	})
 
+	t.Run("CreateSessionWithGroupIDAndChangeIt", func(t *testing.T) {
+		userID := uuid.New()
+		groupID := uuid.New()
+		attributes := map[string]SessionAttributeValue{
+			"key": {Value: "value", Marshaled: false},
+		}
+
+		// Create a session with a group ID
+		session, err := sm.CreateSession(context.Background(), userID, attributes, WithGroupID(groupID))
+		require.NoError(t, err)
+		assert.NotEqual(t, uuid.Nil, session.ID)
+		assert.NotEqual(t, uuid.Nil, session.GroupID)
+		assert.Equal(t, groupID, *session.GroupID)
+
+		session.UpdateAttribute("att1", 123)
+		sm.UpdateSession(ctx, session)
+		session, err = sm.GetSession(ctx, session.ID)
+		require.NoError(t, err)
+		assert.NotEqual(t, uuid.Nil, session.ID)
+		require.NotNil(t, session.GroupID)
+		assert.NotEqual(t, uuid.Nil, session.GroupID)
+		assert.Equal(t, groupID, *session.GroupID)
+
+		newUUID := uuid.New()
+		session.GroupID = &newUUID
+		_, err = sm.UpdateSession(ctx, session)
+		require.NoError(t, err)
+
+		// Retrieve the session and verify the group ID
+		retrievedSession, err := sm.GetSessionWithVersion(context.Background(), session.ID, 1)
+		require.NoError(t, err)
+		assert.Equal(t, userID, retrievedSession.UserID)
+		assert.Equal(t, newUUID, *retrievedSession.GroupID)
+		session.GroupID = &groupID
+		_, err = sm.UpdateSession(ctx, session)
+		require.NoError(t, err)
+
+		// Retrieve the session and verify the group ID
+		retrievedSession, err = sm.GetSessionWithVersion(context.Background(), session.ID, 1)
+		require.NoError(t, err)
+		assert.Equal(t, userID, retrievedSession.UserID)
+		assert.Equal(t, groupID, *retrievedSession.GroupID)
+
+		// Create a session without a group ID
+		sessionWithoutGroup, err := sm.CreateSession(context.Background(), userID, attributes)
+		require.NoError(t, err)
+		assert.NotEqual(t, uuid.Nil, sessionWithoutGroup.ID)
+		assert.Nil(t, sessionWithoutGroup.GroupID)
+
+		// Retrieve the session without group ID and verify
+		retrievedSessionWithoutGroup, err := sm.GetSessionWithVersion(context.Background(), sessionWithoutGroup.ID, 1)
+		require.NoError(t, err)
+		assert.Equal(t, userID, retrievedSessionWithoutGroup.UserID)
+		assert.Nil(t, retrievedSessionWithoutGroup.GroupID)
+	})
+
 	t.Run("DeleteAllSessionsByGroupID", func(t *testing.T) {
 		groupID := uuid.New()
 		attributes := map[string]SessionAttributeValue{

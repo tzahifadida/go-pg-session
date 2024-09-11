@@ -109,6 +109,7 @@ type Session struct {
 	sm           *SessionManager
 	fromCache    bool
 	invalidated  bool
+	groupId      *uuid.UUID
 }
 
 // Invalidate marks the session as invalidated
@@ -129,6 +130,11 @@ func (s *Session) IsFromCache() bool {
 
 // IsModified returns true if the session has been modified (attributes changed or deleted).
 func (s *Session) IsModified() bool {
+	if s.groupId != nil && s.GroupID != nil && *s.groupId != *s.GroupID {
+		return true
+	} else if s.groupId != s.GroupID {
+		return true
+	}
 	return len(s.changed) > 0 || len(s.deleted) > 0
 }
 
@@ -346,10 +352,11 @@ func (sm *SessionManager) createSchemaAndTables() error {
 // CreateSessionOption is a function type that modifies Session during creation
 type CreateSessionOption func(*Session)
 
-// WithGroupID sets the GroupID for the session during creation
+// WithGroupID sets the GroupID for the session during creation. Can be an account or tenant id. You can also change it before updateSession.
 func WithGroupID(groupID uuid.UUID) CreateSessionOption {
 	return func(s *Session) {
 		s.GroupID = &groupID
+		s.groupId = s.GroupID
 	}
 }
 
@@ -688,18 +695,18 @@ func (sm *SessionManager) UpdateSession(ctx context.Context, session *Session, o
 	now := sm.clock.Now()
 	updateQueryTemplate := `
         UPDATE %s
-        SET "updated_at" = $1, "version" = "version" + 1
+        SET "updated_at" = $1, "version" = "version" + 1, "group_id" = $3
         WHERE "id" = $2%s 
         RETURNING "id", "user_id", "group_id", "last_accessed", "expires_at", "updated_at", "version"
     `
 	var updateQuery string
 	var updateQueryRow *sql.Row
 	if opts.CheckVersion {
-		updateQuery = fmt.Sprintf(updateQueryTemplate, sm.getTableName("sessions"), ` AND "version" = $3`)
-		updateQueryRow = tx.QueryRowContext(ctx, updateQuery, now, session.ID, session.Version)
+		updateQuery = fmt.Sprintf(updateQueryTemplate, sm.getTableName("sessions"), ` AND "version" = $4`)
+		updateQueryRow = tx.QueryRowContext(ctx, updateQuery, now, session.ID, session.GroupID, session.Version)
 	} else {
 		updateQuery = fmt.Sprintf(updateQueryTemplate, sm.getTableName("sessions"), "")
-		updateQueryRow = tx.QueryRowContext(ctx, updateQuery, now, session.ID)
+		updateQueryRow = tx.QueryRowContext(ctx, updateQuery, now, session.ID, session.GroupID)
 	}
 
 	var updatedSession Session
@@ -712,6 +719,7 @@ func (sm *SessionManager) UpdateSession(ctx context.Context, session *Session, o
 		&updatedSession.UpdatedAt,
 		&updatedSession.Version,
 	)
+	updatedSession.groupId = updatedSession.GroupID
 	if err != nil {
 		if err == sql.ErrNoRows {
 			// Remove the session from the cache
@@ -1349,6 +1357,7 @@ func (s *Session) deepCopy() *Session {
 		ID:           s.ID,
 		UserID:       s.UserID,
 		GroupID:      s.GroupID,
+		groupId:      s.groupId,
 		LastAccessed: s.LastAccessed,
 		ExpiresAt:    s.ExpiresAt,
 		UpdatedAt:    s.UpdatedAt,
