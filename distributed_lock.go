@@ -155,7 +155,7 @@ func (dl *DistributedLock) attemptLock(ctx context.Context, forceRefresh bool) e
 	var session *Session
 	var err error
 	if forceRefresh {
-		session, err = dl.sm.GetSessionWithVersion(ctx, dl.sessionID, 0, WithForceRefresh())
+		session, err = dl.sm.GetSessionWithVersion(ctx, dl.sessionID, 0, WithGetForceRefresh())
 	} else {
 		session, err = dl.sm.GetSessionWithVersion(ctx, dl.sessionID, 0)
 	}
@@ -175,12 +175,12 @@ func (dl *DistributedLock) attemptLock(ctx context.Context, forceRefresh bool) e
 		return fmt.Errorf("failed to get current lock info: %w", err)
 	}
 
-	err = session.UpdateAttribute(dl.lockAttributeKey(), lockInfo, WithExpiresAt(expiresAt))
+	err = session.UpdateAttribute(dl.lockAttributeKey(), lockInfo, WithUpdateAttExpiresAt(expiresAt))
 	if err != nil {
 		return fmt.Errorf("failed to update lock attribute: %w", err)
 	}
 
-	_, err = dl.sm.UpdateSession(ctx, session, WithCheckAttributeVersion(), WithDoNotNotify())
+	_, err = dl.sm.UpdateSession(ctx, session, WithUpdateCheckAttributeVersion(), WithUpdateDoNotNotify())
 	if err != nil {
 		if errors.Is(err, ErrSessionVersionIsOutdated) {
 			return err // This will trigger a retry
@@ -246,7 +246,7 @@ func (dl *DistributedLock) Unlock(ctx context.Context) error {
 
 	dl.stopHeartbeatLocked()
 
-	session, err := dl.sm.GetSessionWithVersion(ctx, dl.sessionID, 0, WithForceRefresh())
+	session, err := dl.sm.GetSessionWithVersion(ctx, dl.sessionID, 0, WithGetForceRefresh())
 	if err != nil {
 		return fmt.Errorf("failed to get session: %w", err)
 	}
@@ -269,7 +269,7 @@ func (dl *DistributedLock) Unlock(ctx context.Context) error {
 		return fmt.Errorf("failed to unlock when deleteing an attribute in the session: %w", err)
 	}
 
-	_, err = dl.sm.UpdateSession(ctx, session, WithCheckAttributeVersion(), WithDoNotNotify())
+	_, err = dl.sm.UpdateSession(ctx, session, WithUpdateCheckAttributeVersion(), WithUpdateDoNotNotify())
 	if err != nil {
 		return fmt.Errorf("failed to update session: %w", err)
 	}
@@ -289,7 +289,7 @@ func (dl *DistributedLock) ExtendLease(ctx context.Context, extension time.Durat
 	dl.mutex.Lock()
 	defer dl.mutex.Unlock()
 
-	session, err := dl.sm.GetSessionWithVersion(ctx, dl.sessionID, 0, WithForceRefresh())
+	session, err := dl.sm.GetSessionWithVersion(ctx, dl.sessionID, 0, WithGetForceRefresh())
 	if err != nil {
 		return fmt.Errorf("failed to get session: %w", err)
 	}
@@ -318,12 +318,12 @@ func (dl *DistributedLock) ExtendLease(ctx context.Context, extension time.Durat
 	dl.config.LeaseTime += extension
 	dl.leaseExpiration = newExpiresAt
 
-	err = session.UpdateAttribute(dl.lockAttributeKey(), currentLockInfo, WithExpiresAt(newExpiresAt))
+	err = session.UpdateAttribute(dl.lockAttributeKey(), currentLockInfo, WithUpdateAttExpiresAt(newExpiresAt))
 	if err != nil {
 		return fmt.Errorf("failed to update lock attribute: %w", err)
 	}
 
-	_, err = dl.sm.UpdateSession(ctx, session, WithCheckAttributeVersion(), WithDoNotNotify())
+	_, err = dl.sm.UpdateSession(ctx, session, WithUpdateCheckAttributeVersion(), WithUpdateDoNotNotify())
 	if err != nil {
 		return fmt.Errorf("failed to update session: %w", err)
 	}
@@ -343,7 +343,7 @@ func (dl *DistributedLock) ExtendLease(ctx context.Context, extension time.Durat
 }
 
 func (dl *DistributedLock) sendHeartbeat(ctx context.Context) error {
-	session, err := dl.sm.GetSessionWithVersion(ctx, dl.sessionID, 0, WithForceRefresh())
+	session, err := dl.sm.GetSessionWithVersion(ctx, dl.sessionID, 0, WithGetForceRefresh())
 	if err != nil {
 		return fmt.Errorf("failed to get session: %w", err)
 	}
@@ -364,12 +364,12 @@ func (dl *DistributedLock) sendHeartbeat(ctx context.Context) error {
 	now := dl.sm.clock.Now()
 	currentLockInfo.LastHeartbeat = now
 
-	err = session.UpdateAttribute(dl.lockAttributeKey(), currentLockInfo, WithExpiresAt(dl.leaseExpiration))
+	err = session.UpdateAttribute(dl.lockAttributeKey(), currentLockInfo, WithUpdateAttExpiresAt(dl.leaseExpiration))
 	if err != nil {
 		return fmt.Errorf("failed to update lock attribute: %w", err)
 	}
 
-	_, err = dl.sm.UpdateSession(ctx, session, WithCheckAttributeVersion(), WithDoNotNotify())
+	_, err = dl.sm.UpdateSession(ctx, session, WithUpdateCheckAttributeVersion(), WithUpdateDoNotNotify())
 	if err != nil {
 		return fmt.Errorf("failed to update session: %w", err)
 	}

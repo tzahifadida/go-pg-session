@@ -60,6 +60,8 @@ This approach offers a hybrid solution that leverages the benefits of both cooki
     - **Attribute-Level Versioning**: Option to check versions of individual session attributes, providing fine-grained control over concurrent modifications.
 - **Attribute-Level Expiration**: Individual session attributes can have their own expiration times, providing fine-grained control over data lifecycle.
 - **Distributed Locks**: Provides a mechanism for coordinating access to shared resources across multiple nodes.
+- **Flexible Inactivity Handling**: Option to include or exclude sessions from inactivity-based expiration.
+- **Dynamic Expiration Management**: Ability to update session expiration time dynamically.
 
 ### Attribute-Level Expiration: A Powerful Feature
 
@@ -176,6 +178,7 @@ cfg.MaxSessions = 10
 cfg.SessionExpiration = 24 * time.Hour // 1 day
 cfg.CreateSchemaIfMissing = true
 cfg.MaxSessionLifetimeInCache = 1 * time.Hour // Force refresh after 1 hour
+cfg.InactivityDuration = 2 * time.Hour // Sessions expire after 2 hours of inactivity
 ```
 
 ### MaxSessionLifetimeInCache
@@ -195,41 +198,44 @@ Initialize a `SessionManager` with the configuration and a PostgreSQL database c
 
 ```go
 import (
-"database/sql"
-_ "github.com/jackc/pgx/v5/stdlib"
-"github.com/tzahifadida/go-pg-session"
+    "database/sql"
+    _ "github.com/jackc/pgx/v5/stdlib"
+    "github.com/tzahifadida/go-pg-session"
 )
 
 // Open a database connection
 db, err := sql.Open("pgx", "postgres://username:password@localhost/dbname?sslmode=disable")
 if err != nil {
-log.Fatalf("Failed to open database: %v", err)
+    log.Fatalf("Failed to open database: %v", err)
 }
 defer db.Close()
 
 // Create a new SessionManager
 sessionManager, err := gopgsession.NewSessionManager(ctx, cfg, db)
 if err != nil {
-log.Fatalf("Failed to initialize session manager: %v", err)
+    log.Fatalf("Failed to initialize session manager: %v", err)
 }
 defer sessionManager.Shutdown(context.Background())
 ```
 
-### Creating a Session
+### Creating a Session with Custom Options
 
-Create a session for a user with initial attributes.
+Create a session for a user with initial attributes and custom options.
 
 ```go
 ctx := context.Background()
 userID := uuid.New()
 attributes := map[string]gopgsession.SessionAttributeValue{
-"role":        {Value: "admin"},
-"preferences": {Value: map[string]string{"theme": "dark"}},
+    "role":        {Value: "admin"},
+    "preferences": {Value: map[string]string{"theme": "dark"}},
 }
 
-session, err := sessionManager.CreateSession(ctx, userID, attributes)
+// Create a session that doesn't expire due to inactivity and has a custom expiration time
+session, err := sessionManager.CreateSession(ctx, userID, attributes,
+    gopgsession.WithCreateIncludeInactivity(false),
+    gopgsession.WithCreateExpiresAt(time.Now().Add(48 * time.Hour)))
 if err != nil {
-log.Fatalf("Failed to create session: %v", err)
+    log.Fatalf("Failed to create session: %v", err)
 }
 
 log.Printf("Created session with ID: %s", session.ID)
@@ -242,22 +248,63 @@ Retrieve a session by its ID. You can use `GetSession` with optional parameters 
 ```go
 session, err := sessionManager.GetSession(ctx, sessionID)
 if err != nil {
-log.Fatalf("Failed to retrieve session: %v", err)
+    log.Fatalf("Failed to retrieve session: %v", err)
 }
 
 // With options
 session, err := sessionManager.GetSession(ctx, sessionID, gopgsession.WithDoNotUpdateSessionLastAccess(), gopgsession.WithForceRefresh())
 if err != nil {
-log.Fatalf("Failed to retrieve session: %v", err)
+    log.Fatalf("Failed to retrieve session: %v", err)
 }
 
 var preferences map[string]string
 _, err = session.GetAttributeAndRetainUnmarshaled("preferences", &preferences)
 if err != nil {
-log.Fatalf("Failed to get preferences: %v", err)
+    log.Fatalf("Failed to get preferences: %v", err)
 }
 
 log.Printf("User preferences: %v", preferences)
+```
+
+### Updating Session Expiration
+
+Update the expiration time of an existing session.
+
+```go
+session, err := sessionManager.GetSession(ctx, sessionID)
+if err != nil {
+    log.Fatalf("Failed to retrieve session: %v", err)
+}
+
+// Extend the session's expiration time
+newExpiresAt := time.Now().Add(24 * time.Hour)
+updatedSession, err := sessionManager.UpdateSession(ctx, session, 
+    gopgsession.WithUpdateExpiresAt(newExpiresAt))
+if err != nil {
+    log.Fatalf("Failed to update session expiration: %v", err)
+}
+
+log.Printf("Updated session expiration to: %v", updatedSession.ExpiresAt)
+```
+
+### Toggling Inactivity Expiration
+
+Change whether a session should expire due to inactivity.
+
+```go
+session, err := sessionManager.GetSession(ctx, sessionID)
+if err != nil {
+    log.Fatalf("Failed to retrieve session: %v", err)
+}
+
+// Disable inactivity-based expiration for this session
+updatedSession, err := sessionManager.UpdateSession(ctx, session, 
+    gopgsession.WithUpdateIncludeInactivity(false))
+if err != nil {
+    log.Fatalf("Failed to update session inactivity setting: %v", err)
+}
+
+log.Printf("Updated session inactivity setting: %v", updatedSession.IncludeInactivity)
 ```
 
 ### Updating a Session with Version Check
@@ -267,21 +314,17 @@ Update a session while ensuring version consistency at the session level.
 ```go
 session, err := sessionManager.GetSession(ctx, sessionID)
 if err != nil {
-log.Fatalf("Failed to retrieve session: %v", err)
+    log.Fatalf("Failed to retrieve session: %v", err)
 }
 
 err = session.UpdateAttribute("last_access", time.Now())
 if err != nil {
-log.Fatalf("Failed to update session attribute: %v", err)
-}
-
-if err != nil {
-log.Fatalf("Failed to update session attribute: %v", err)
+    log.Fatalf("Failed to update session attribute: %v", err)
 }
 
 updatedSession, err := sessionManager.UpdateSession(ctx, session, gopgsession.WithCheckVersion())
 if err != nil {
-log.Fatalf("Failed to update session: %v", err)
+    log.Fatalf("Failed to update session: %v", err)
 }
 ```
 
@@ -292,24 +335,24 @@ Update a session while ensuring version consistency at the attribute level.
 ```go
 session, err := sessionManager.GetSession(ctx, sessionID)
 if err != nil {
-log.Fatalf("Failed to retrieve session: %v", err)
+    log.Fatalf("Failed to retrieve session: %v", err)
 }
 
 var preferences map[string]string
 _, err = session.GetAttributeAndRetainUnmarshaled("preferences", &preferences)
 if err != nil {
-log.Fatalf("Failed to get preferences: %v", err)
+    log.Fatalf("Failed to get preferences: %v", err)
 }
 
 preferences["theme"] = "light"
 err = session.UpdateAttribute("preferences", preferences)
 if err != nil {
-log.Fatalf("Failed to update session attribute: %v", err)
+    log.Fatalf("Failed to update session attribute: %v", err)
 }
 
 updatedSession, err := sessionManager.UpdateSession(ctx, session, gopgsession.WithCheckAttributeVersion())
 if err != nil {
-log.Fatalf("Failed to update session: %v", err)
+    log.Fatalf("Failed to update session: %v", err)
 }
 ```
 
@@ -320,7 +363,7 @@ Delete a session by its ID.
 ```go
 err = sessionManager.DeleteSession(ctx, sessionID)
 if err != nil {
-log.Fatalf("Failed to delete session: %v", err)
+    log.Fatalf("Failed to delete session: %v", err)
 }
 
 log.Printf("Deleted session with ID: %s", sessionID)
@@ -332,76 +375,76 @@ Here are examples of login and logout handlers that demonstrate session creation
 
 ```go
 func loginHandler(sm *gopgsession.SessionManager) http.HandlerFunc {
-return func(w http.ResponseWriter, r *http.Request) {
-// Authenticate user (simplified for example)
-username := r.FormValue("username")
-password := r.FormValue("password")
+    return func(w http.ResponseWriter, r *http.Request) {
+        // Authenticate user (simplified for example)
+        username := r.FormValue("username")
+        password := r.FormValue("password")
 
-userID, err := authenticateUser(username, password)
-if err != nil {
-http.Error(w, "Authentication failed", http.StatusUnauthorized)
-return
-}
+        userID, err := authenticateUser(username, password)
+        if err != nil {
+            http.Error(w, "Authentication failed", http.StatusUnauthorized)
+            return
+        }
 
-// Create new session
-attributes := map[string]gopgsession.SessionAttributeValue{
-"username":    {Value: username},
-"last_login":  {Value: time.Now().Format(time.RFC3339)},
-}
-session, err := sm.CreateSession(r.Context(), userID, attributes)
-if err != nil {
-http.Error(w, "Failed to create session", http.StatusInternalServerError)
-return
-}
+        // Create new session
+        attributes := map[string]gopgsession.SessionAttributeValue{
+            "username":    {Value: username},
+            "last_login":  {Value: time.Now().Format(time.RFC3339)},
+        }
+        session, err := sm.CreateSession(r.Context(), userID, attributes)
+        if err != nil {
+            http.Error(w, "Failed to create session", http.StatusInternalServerError)
+            return
+        }
 
-// Set session cookie
-http.SetCookie(w, &http.Cookie{
-Name:     "session_id",
-Value:    session.ID.String(),
-HttpOnly: true,
-Secure:   true,
-SameSite: http.SameSiteStrictMode,
-})
+        // Set session cookie
+        http.SetCookie(w, &http.Cookie{
+            Name:     "session_id",
+            Value:    session.ID.String(),
+            HttpOnly: true,
+            Secure:   true,
+            SameSite: http.SameSiteStrictMode,
+        })
 
-w.WriteHeader(http.StatusOK)
-w.Write([]byte("Login successful"))
-}
+        w.WriteHeader(http.StatusOK)
+        w.Write([]byte("Login successful"))
+    }
 }
 
 func logoutHandler(sm *gopgsession.SessionManager) http.HandlerFunc {
-return func(w http.ResponseWriter, r *http.Request) {
-sessionCookie, err := r.Cookie("session_id")
-if err != nil {
-http.Error(w, "No session found", http.StatusBadRequest)
-return
-}
+    return func(w http.ResponseWriter, r *http.Request) {
+        sessionCookie, err := r.Cookie("session_id")
+        if err != nil {
+            http.Error(w, "No session found", http.StatusBadRequest)
+            return
+        }
 
-sessionID, err := uuid.Parse(sessionCookie.Value)
-if err != nil {
-http.Error(w, "Invalid session ID", http.StatusBadRequest)
-return
-}
+        sessionID, err := uuid.Parse(sessionCookie.Value)
+        if err != nil {
+            http.Error(w, "Invalid session ID", http.StatusBadRequest)
+            return
+        }
 
-// Delete the session
-err = sm.DeleteSession(r.Context(), sessionID)
-if err != nil {
-http.Error(w, "Failed to delete session", http.StatusInternalServerError)
-return
-}
+        // Delete the session
+        err = sm.DeleteSession(r.Context(), sessionID)
+        if err != nil {
+            http.Error(w, "Failed to delete session", http.StatusInternalServerError)
+            return
+        }
 
-// Clear the session cookie
-http.SetCookie(w, &http.Cookie{
-Name:     "session_id",
-Value:    "",
-HttpOnly: true,
-Secure:   true,
-SameSite: http.SameSiteStrictMode,
-MaxAge:   -1,
-})
+        // Clear the session cookie
+        http.SetCookie(w, &http.Cookie{
+            Name:     "session_id",
+            Value:    "",
+            HttpOnly: true,
+            Secure:   true,
+            SameSite: http.SameSiteStrictMode,
+            MaxAge:   -1,
+        })
 
-w.WriteHeader(http.StatusOK)
-w.Write([]byte("Logout successful"))
-}
+        w.WriteHeader(http.StatusOK)
+        w.Write([]byte("Logout successful"))
+    }
 }
 ```
 
@@ -411,58 +454,58 @@ Here's a refined example of handling concurrent updates to a session, useful for
 
 ```go
 func addToCartHandler(sm *gopgsession.SessionManager) http.HandlerFunc {
-return func(w http.ResponseWriter, r *http.Request) {
-sessionID, _ := uuid.Parse(r.Cookie("session_id").Value)
-itemID := r.FormValue("item_id")
+    return func(w http.ResponseWriter, r *http.Request) {
+        sessionID, _ := uuid.Parse(r.Cookie("session_id").Value)
+        itemID := r.FormValue("item_id")
 
-maxRetries := 3
-for attempt := 0; attempt < maxRetries; attempt++ {
-var session *gopgsession.Session
-var err error
+        maxRetries := 3
+        for attempt := 0; attempt < maxRetries; attempt++ {
+            var session *gopgsession.Session
+            var err error
 
-if attempt == 0 {
-session, err = sm.GetSession(r.Context(), sessionID)
-} else {
-session, err = sm.GetSession(r.Context(), sessionID, gopgsession.WithForceRefresh())
-}
+            if attempt == 0 {
+                session, err = sm.GetSession(r.Context(), sessionID)
+            } else {
+                session, err = sm.GetSession(r.Context(), sessionID, gopgsession.WithForceRefresh())
+            }
 
-if err != nil {
-http.Error(w, "Failed to retrieve session", http.StatusInternalServerError)
-return
-}
+            if err != nil {
+                http.Error(w, "Failed to retrieve session", http.StatusInternalServerError)
+                return
+            }
 
-// Business logic: Update cart
-var cartItems []string
-_, err = session.GetAttributeAndRetainUnmarshaled("cart", &cartItems)
-if err != nil && err.Error() != "attribute cart not found" {
-http.Error(w, "Failed to get cart", http.StatusInternalServerError)
-return
-}
-cartItems = append(cartItems, itemID)
+            // Business logic: Update cart
+            var cartItems []string
+            _, err = session.GetAttributeAndRetainUnmarshaled("cart", &cartItems)
+            if err != nil && err.Error() != "attribute cart not found" {
+                http.Error(w, "Failed to get cart", http.StatusInternalServerError)
+                return
+            }
+            cartItems = append(cartItems, itemID)
 
-err = session.UpdateAttribute("cart", cartItems)
-if err != nil {
-http.Error(w, "Failed to update cart", http.StatusInternalServerError)
-return
-}
+            err = session.UpdateAttribute("cart", cartItems)
+            if err != nil {
+                http.Error(w, "Failed to update cart", http.StatusInternalServerError)
+                return
+            }
 
-_, err = sm.UpdateSession(r.Context(), session, gopgsession.WithCheckAttributeVersion())
-if err != nil {
-if err.Error() == "attribute cart version mismatch" {
-continue // Retry
-}
-http.Error(w, "Failed to save session", http.StatusInternalServerError)
-return
-}
+            _, err = sm.UpdateSession(r.Context(), session, gopgsession.WithCheckAttributeVersion())
+            if err != nil {
+                if err.Error() == "attribute cart version mismatch" {
+                    continue // Retry
+                }
+                http.Error(w, "Failed to save session", http.StatusInternalServerError)
+                return
+            }
 
-// Success
-w.WriteHeader(http.StatusOK)
-w.Write([]byte("Item added to cart"))
-return
-}
+            // Success
+            w.WriteHeader(http.StatusOK)
+            w.Write([]byte("Item added to cart"))
+            return
+        }
 
-http.Error(w, "Failed to add item to cart after max retries", http.StatusConflict)
-}
+        http.Error(w, "Failed to add item to cart after max retries", http.StatusConflict)
+    }
 }
 ```
 
@@ -474,9 +517,9 @@ Here's an example of how to implement this:
 
 ```go
 import (
-"github.com/tzahifadida/go-pg-session"
-"github.com/google/uuid"
-"fmt"
+    "github.com/tzahifadida/go-pg-session"
+    "github.com/google/uuid"
+    "fmt"
 )
 
 // Initialize the signer
@@ -485,81 +528,60 @@ signerPool := gopgsession.NewHMACSHA256SignerPool(secret, 10)
 
 // When creating a session and setting the cookie
 func loginHandler(sm *gopgsession.SessionManager) http.HandlerFunc {
-return func(w http.ResponseWriter, r *http.Request) {
-// ... (authentication logic)
+    return func(w http.ResponseWriter, r *http.Request) {
+        // ... (authentication logic)
 
-session, err := sm.CreateSession(r.Context(), userID, attributes)
-if err != nil {
-http.Error(w, "Failed to create session", http.StatusInternalServerError)
-return
-}
+        session, err := sm.CreateSession(r.Context(), userID, attributes)
+        if err != nil {
+            http.Error(w, "Failed to create session", http.StatusInternalServerError)
+            return
+        }
 
-// Sign and encode the session ID
-signedSessionID, err := signerPool.SignAndEncode(session.ID.String())
-if err != nil {
-http.Error(w, "Failed to sign session", http.StatusInternalServerError)
-return
-}
+        // Sign and encode the session ID
+        signedSessionID, err := signerPool.SignAndEncode(session.ID.String())
+        if err != nil {
+            http.Error(w, "Failed to sign session", http.StatusInternalServerError)
+            return
+        }
 
-// Set the signed session cookie
-http.SetCookie(w, &http.Cookie{
-Name:     "session_id",
-Value:    signedSessionID,
-HttpOnly: true,
-Secure:   true,
-SameSite: http.SameSiteStrictMode,
-})
+        // Set the signed session cookie
+        http.SetCookie(w, &http.Cookie{
+            Name:     "session_id",
+            Value:    signedSessionID,
+            HttpOnly: true,
+            Secure:   true,
+            SameSite: http.SameSiteStrictMode,
+        })
 
-w.WriteHeader(http.StatusOK)
-w.Write([]byte("Login successful"))
-}
+        w.WriteHeader(http.StatusOK)
+        w.Write([]byte("Login successful"))
+    }
 }
 
 // When verifying and retrieving a session
 func getSession(sm *gopgsession.SessionManager, r *http.Request) (*gopgsession.Session, error) {
-cookie, err := r.Cookie("session_id")
-if err != nil {
-return nil, err
-}
+    cookie, err := r.Cookie("session_id")
+    if err != nil {
+        return nil, err
+    }
 
-// Verify the signature and decode the session ID
-isValid, sessionIDString, err := signerPool.VerifyAndDecode(cookie.Value)
-if err != nil {
-return nil, fmt.Errorf("failed to verify and decode session data: %w", err)
-}
-if !isValid {
-return nil, fmt.Errorf("invalid session signature")
-}
+    // Verify the signature and decode the session ID
+    isValid, sessionIDString, err := signerPool.VerifyAndDecode(cookie.Value)
+    if err != nil {
+        return nil, fmt.Errorf("failed to verify and decode session data: %w", err)
+    }
+    if !isValid {
+        return nil, fmt.Errorf("invalid session signature")
+    }
 
-// Parse the session ID
-sessionID, err := uuid.Parse(sessionIDString)
-if err != nil {
-return nil, fmt.Errorf("invalid session ID: %w", err)
-}
-cookie, err := r.Cookie("session_id")
-if err != nil {
-return nil, err
-}
+    // Parse the session ID
+    sessionID, err := uuid.Parse(sessionIDString)
+    if err != nil {
+        return nil, fmt.Errorf("invalid session ID: %w", err)
+    }
 
-// Verify the signature and decode the session ID
-isValid, sessionIDString, err := signerPool.VerifyAndDecode(cookie.Value)
-if err != nil {
-return nil, fmt.Errorf("failed to verify and decode session data: %w", err)
-}
-if !isValid {
-return nil, fmt.Errorf("invalid session signature")
-}
-
-// Parse the session ID
-sessionID, err := uuid.Parse(sessionIDString)
-if err != nil {
-return nil, fmt.Errorf("invalid session ID: %w", err)
-}
-
-// Retrieve the session
-return sm.GetSession(r.Context(), sessionID)
-// Retrieve the session
-return sm.GetSession(r.Context(), sessionID)
+    // Retrieve the session
+    return sm.GetSession(r.Context(), sessionID)
 }
 ```
 
@@ -713,20 +735,20 @@ Here's a basic example of how to use the distributed lock:
 
 ```go
 func performCriticalOperation(sm *gopgsession.SessionManager, sessionID uuid.UUID) error {
-// Create a new distributed lock
-lock := sm.NewDistributedLock(sessionID, "critical-operation", nil)
+    // Create a new distributed lock
+    lock := sm.NewDistributedLock(sessionID, "critical-operation", nil)
 
-// Attempt to acquire the lock
-err := lock.Lock(context.Background())
-if err != nil {
-return fmt.Errorf("failed to acquire lock: %w", err)
-}
-defer lock.Unlock(context.Background())
+    // Attempt to acquire the lock
+    err := lock.Lock(context.Background())
+    if err != nil {
+        return fmt.Errorf("failed to acquire lock: %w", err)
+    }
+    defer lock.Unlock(context.Background())
 
-// Perform your critical operation here
-// ...
+    // Perform your critical operation here
+    // ...
 
-return nil
+    return nil
 }
 ```
 
@@ -738,10 +760,10 @@ You can customize the lock behavior by providing a `DistributedLockConfig`:
 
 ```go
 config := &gopgsession.DistributedLockConfig{
-MaxRetries:        5,
-RetryDelay:        100 * time.Millisecond,
-HeartbeatInterval: 5 * time.Second,
-LeaseTime:         30 * time.Second,
+    MaxRetries:        5,
+    RetryDelay:        100 * time.Millisecond,
+    HeartbeatInterval: 5 * time.Second,
+    LeaseTime:         30 * time.Second,
 }
 
 lock := sm.NewDistributedLock(sessionID, "custom-lock", config)
@@ -753,31 +775,31 @@ If your operation takes longer than expected, you can extend the lease time:
 
 ```go
 func longRunningOperation(sm *gopgsession.SessionManager, sessionID uuid.UUID) error {
-lock := sm.NewDistributedLock(sessionID, "long-operation", nil)
+    lock := sm.NewDistributedLock(sessionID, "long-operation", nil)
 
-err := lock.Lock(context.Background())
-if err != nil {
-return fmt.Errorf("failed to acquire lock: %w", err)
-}
-defer lock.Unlock(context.Background())
+    err := lock.Lock(context.Background())
+    if err != nil {
+        return fmt.Errorf("failed to acquire lock: %w", err)
+    }
+    defer lock.Unlock(context.Background())
 
-// Start the operation
-for {
-// Do some work...
+    // Start the operation
+    for {
+        // Do some work...
 
-// Extend the lease if needed
-err := lock.ExtendLease(context.Background(), 30*time.Second)
-if err != nil {
-return fmt.Errorf("failed to extend lease: %w", err)
-}
+        // Extend the lease if needed
+        err := lock.ExtendLease(context.Background(), 30*time.Second)
+        if err != nil {
+            return fmt.Errorf("failed to extend lease: %w", err)
+        }
 
-// Check if the operation is complete
-if isComplete() {
-break
-}
-}
+        // Check if the operation is complete
+        if isComplete() {
+            break
+        }
+    }
 
-return nil
+    return nil
 }
 ```
 
@@ -787,22 +809,22 @@ In some cases, you might want to handle scenarios where the lock can't be acquir
 
 ```go
 func tryOperation(sm *gopgsession.SessionManager, sessionID uuid.UUID) error {
-lock := sm.NewDistributedLock(sessionID, "try-operation", nil)
+    lock := sm.NewDistributedLock(sessionID, "try-operation", nil)
 
-err := lock.Lock(context.Background())
-if err != nil {
-if errors.Is(err, gopgsession.ErrLockAlreadyHeld) {
-// Handle the case where the lock is already held
-return fmt.Errorf("operation already in progress")
-}
-return fmt.Errorf("failed to acquire lock: %w", err)
-}
-defer lock.Unlock(context.Background())
+    err := lock.Lock(context.Background())
+    if err != nil {
+        if errors.Is(err, gopgsession.ErrLockAlreadyHeld) {
+            // Handle the case where the lock is already held
+            return fmt.Errorf("operation already in progress")
+        }
+        return fmt.Errorf("failed to acquire lock: %w", err)
+    }
+    defer lock.Unlock(context.Background())
 
-// Perform the operation
-// ...
+    // Perform the operation
+    // ...
 
-return nil
+    return nil
 }
 ```
 
@@ -856,7 +878,20 @@ func NewSessionManager(ctx context.Context, cfg *Config, db *sql.DB) (*SessionMa
 Creates a new session for the specified user with given attributes.
 
 ```go
-func (sm *SessionManager) CreateSession(ctx context.Context, userID uuid.UUID, attributes map[string]SessionAttributeValue) (*Session, error)
+func (sm *SessionManager) CreateSession(ctx context.Context, userID uuid.UUID, attributes map[string]SessionAttributeValue, opts ...CreateSessionOption) (*Session, error)
+```
+
+#### CreateSession Options
+
+- `WithCreateIncludeInactivity(bool)`: Sets whether the session should expire due to inactivity.
+- `WithCreateExpiresAt(time.Time)`: Sets a custom expiration time for the session.
+
+Usage example:
+
+```go
+session, err := sessionManager.CreateSession(ctx, userID, attributes,
+    gopgsession.WithCreateIncludeInactivity(false),
+    gopgsession.WithCreateExpiresAt(time.Now().Add(48 * time.Hour)))
 ```
 
 ### `GetSession`
@@ -880,6 +915,8 @@ func (sm *SessionManager) UpdateSession(ctx context.Context, session *Session, o
 - `WithCheckVersion()`: Enables version checking for the entire session.
 - `WithCheckAttributeVersion()`: Enables version checking for individual attributes.
 - `WithDoNotNotify()`: Disables notifications for this update operation.
+- `WithUpdateIncludeInactivity(bool)`: Updates whether the session should expire due to inactivity.
+- `WithUpdateExpiresAt(time.Time)`: Updates the expiration time of the session.
 
 Usage examples:
 
@@ -889,6 +926,11 @@ updatedSession, err := sm.UpdateSession(ctx, session, gopgsession.WithCheckVersi
 
 // Attribute-level version checking
 updatedSession, err := sm.UpdateSession(ctx, session, gopgsession.WithCheckAttributeVersion())
+
+// Update inactivity setting and expiration time
+updatedSession, err := sm.UpdateSession(ctx, session,
+    gopgsession.WithUpdateIncludeInactivity(true),
+    gopgsession.WithUpdateExpiresAt(time.Now().Add(24 * time.Hour)))
 ```
 
 ### `DeleteSession`
@@ -1004,14 +1046,14 @@ Usage example:
 
 ```go
 var preferences struct {
-Theme string `json:"theme"`
-Language string `json:"language"`
+    Theme string `json:"theme"`
+    Language string `json:"language"`
 }
 
 attr, err := session.GetAttributeAndRetainUnmarshaled("preferences", &preferences)
 if err != nil {
-log.Printf("Failed to get preferences: %v", err)
-return
+    log.Printf("Failed to get preferences: %v", err)
+    return
 }
 
 log.Printf("User preferences: Theme=%s, Language=%s", preferences.Theme, preferences.Language)

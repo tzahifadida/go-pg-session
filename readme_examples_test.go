@@ -29,10 +29,95 @@ func TestReadmeExamples(t *testing.T) {
 	cfg.MaxSessions = 10
 	cfg.SessionExpiration = 24 * time.Hour // 1 day
 	cfg.CreateSchemaIfMissing = true
+	cfg.InactivityDuration = 2 * time.Hour // Sessions expire after 2 hours of inactivity
 
 	sessionManager, err := NewSessionManager(ctx, cfg, db)
 	require.NoError(t, err)
 	defer sessionManager.Shutdown(context.Background())
+
+	t.Run("CreateSessionWithCustomOptions", func(t *testing.T) {
+		userID := uuid.New()
+		attributes := map[string]SessionAttributeValue{
+			"role":        {Value: "admin"},
+			"preferences": {Value: map[string]string{"theme": "dark"}},
+		}
+
+		customExpiry := time.Now().Add(48 * time.Hour)
+		session, err := sessionManager.CreateSession(ctx, userID, attributes,
+			WithCreateIncludeInactivity(false),
+			WithCreateExpiresAt(customExpiry))
+		require.NoError(t, err)
+		assert.NotNil(t, session)
+		assert.Equal(t, userID, session.UserID)
+		assert.False(t, session.IncludeInactivity)
+		assert.Equal(t, customExpiry.Unix(), session.ExpiresAt.Unix())
+
+		// Verify attributes
+		roleAttr, exists := session.GetAttribute("role")
+		assert.True(t, exists)
+		assert.Equal(t, "admin", roleAttr.Value)
+
+		var preferences map[string]string
+		_, err = session.GetAttributeAndRetainUnmarshaled("preferences", &preferences)
+		require.NoError(t, err)
+		assert.Equal(t, "dark", preferences["theme"])
+	})
+
+	t.Run("UpdateSessionExpiresAt", func(t *testing.T) {
+		userID := uuid.New()
+		session, err := sessionManager.CreateSession(ctx, userID, nil)
+		require.NoError(t, err)
+
+		newExpiresAt := time.Now().Add(24 * time.Hour)
+		updatedSession, err := sessionManager.UpdateSession(ctx, session,
+			WithUpdateExpiresAt(newExpiresAt))
+		require.NoError(t, err)
+		assert.Equal(t, newExpiresAt.Unix(), updatedSession.ExpiresAt.Unix())
+	})
+
+	t.Run("ToggleInactivityExpiration", func(t *testing.T) {
+		userID := uuid.New()
+		session, err := sessionManager.CreateSession(ctx, userID, nil)
+		require.NoError(t, err)
+		assert.True(t, session.IncludeInactivity) // Default should be true
+
+		updatedSession, err := sessionManager.UpdateSession(ctx, session,
+			WithUpdateIncludeInactivity(false))
+		require.NoError(t, err)
+		assert.False(t, updatedSession.IncludeInactivity)
+	})
+
+	t.Run("AttributeLevelExpiration", func(t *testing.T) {
+		userID := uuid.New()
+		session, err := sessionManager.CreateSession(ctx, userID, nil)
+		require.NoError(t, err)
+
+		// Grant elevated access for 15 minutes
+		elevatedExpiry := time.Now().Add(15 * time.Minute)
+		err = session.UpdateAttribute("elevated_access", "true", WithUpdateAttExpiresAt(elevatedExpiry))
+		require.NoError(t, err)
+
+		// Set a promotional offer that expires in 1 hour
+		offerExpiry := time.Now().Add(1 * time.Hour)
+		err = session.UpdateAttribute("promo_code", "FLASH_SALE_20", WithUpdateAttExpiresAt(offerExpiry))
+		require.NoError(t, err)
+
+		updatedSession, err := sessionManager.UpdateSession(ctx, session)
+		require.NoError(t, err)
+
+		// Verify attributes were set with expiration
+		elevatedAccess, exists := updatedSession.GetAttribute("elevated_access")
+		require.True(t, exists)
+		assert.Equal(t, "true", elevatedAccess.Value)
+		assert.NotNil(t, elevatedAccess.ExpiresAt)
+		assert.Equal(t, elevatedExpiry.Unix(), elevatedAccess.ExpiresAt.Unix())
+
+		promoCode, exists := updatedSession.GetAttribute("promo_code")
+		require.True(t, exists)
+		assert.Equal(t, "FLASH_SALE_20", promoCode.Value)
+		assert.NotNil(t, promoCode.ExpiresAt)
+		assert.Equal(t, offerExpiry.Unix(), promoCode.ExpiresAt.Unix())
+	})
 
 	t.Run("BasicUsage", func(t *testing.T) {
 		// Creating a Session
@@ -47,7 +132,7 @@ func TestReadmeExamples(t *testing.T) {
 		assert.NotNil(t, session)
 
 		// Retrieving a Session
-		retrievedSession, err := sessionManager.GetSession(context.Background(), session.ID, WithDoNotUpdateSessionLastAccess())
+		retrievedSession, err := sessionManager.GetSession(context.Background(), session.ID, WithGetDoNotUpdateSessionLastAccess())
 		require.NoError(t, err)
 		assert.Equal(t, userID, retrievedSession.UserID)
 
@@ -59,7 +144,7 @@ func TestReadmeExamples(t *testing.T) {
 		err = retrievedSession.UpdateAttribute("preferences", preferences)
 		require.NoError(t, err)
 
-		updatedSession, err := sessionManager.UpdateSession(context.Background(), retrievedSession, WithCheckVersion())
+		updatedSession, err := sessionManager.UpdateSession(context.Background(), retrievedSession, WithUpdateCheckVersion())
 		require.NoError(t, err)
 
 		// Verify the updated attribute
@@ -94,7 +179,7 @@ func TestReadmeExamples(t *testing.T) {
 		err = session.UpdateAttribute("preferences", preferences)
 		require.NoError(t, err)
 
-		updatedSession, err := sessionManager.UpdateSession(context.Background(), session, WithCheckAttributeVersion())
+		updatedSession, err := sessionManager.UpdateSession(context.Background(), session, WithUpdateCheckAttributeVersion())
 		require.NoError(t, err)
 
 		// Verify the update
@@ -273,36 +358,6 @@ func TestReadmeExamples(t *testing.T) {
 		_, err = updatedSession.GetAttributeAndRetainUnmarshaled("page_views", &pageViews)
 		require.NoError(t, err)
 		assert.Equal(t, 6, pageViews, "Page views should be incremented")
-	})
-
-	t.Run("AttributeLevelExpiration", func(t *testing.T) {
-		userID := uuid.New()
-		session, err := sessionManager.CreateSession(context.Background(), userID, nil)
-		require.NoError(t, err)
-
-		// Grant elevated access for 15 minutes
-		elevatedExpiry := time.Now().Add(15 * time.Minute)
-		err = session.UpdateAttribute("elevated_access", "true", WithExpiresAt(elevatedExpiry))
-		require.NoError(t, err)
-
-		// Set a promotional offer that expires in 1 hour
-		offerExpiry := time.Now().Add(1 * time.Hour)
-		err = session.UpdateAttribute("promo_code", "FLASH_SALE_20", WithExpiresAt(offerExpiry))
-		require.NoError(t, err)
-
-		updatedSession, err := sessionManager.UpdateSession(context.Background(), session)
-		require.NoError(t, err)
-
-		// Verify attributes were set with expiration
-		elevatedAccess, exists := updatedSession.GetAttribute("elevated_access")
-		require.True(t, exists)
-		assert.Equal(t, "true", elevatedAccess.Value)
-		assert.NotNil(t, elevatedAccess.ExpiresAt)
-
-		promoCode, exists := updatedSession.GetAttribute("promo_code")
-		require.True(t, exists)
-		assert.Equal(t, "FLASH_SALE_20", promoCode.Value)
-		assert.NotNil(t, promoCode.ExpiresAt)
 	})
 }
 
@@ -639,7 +694,7 @@ func updateUserPreferences(sm *SessionManager) http.HandlerFunc {
 			if attempt == 0 {
 				session, err = sm.GetSession(r.Context(), sessionID)
 			} else {
-				session, err = sm.GetSession(r.Context(), sessionID, WithForceRefresh())
+				session, err = sm.GetSession(r.Context(), sessionID, WithGetForceRefresh())
 			}
 
 			if err != nil {
@@ -661,7 +716,7 @@ func updateUserPreferences(sm *SessionManager) http.HandlerFunc {
 				return
 			}
 
-			_, err = sm.UpdateSession(r.Context(), session, WithCheckAttributeVersion())
+			_, err = sm.UpdateSession(r.Context(), session, WithUpdateCheckAttributeVersion())
 			if err != nil {
 				if err.Error() == "attribute preferences version mismatch" {
 					// Specific attribute version conflict, retry
@@ -704,9 +759,8 @@ func addToCartHandler(sm *SessionManager) http.HandlerFunc {
 			if attempt == 0 {
 				session, err = sm.GetSession(r.Context(), sessionID)
 			} else {
-				session, err = sm.GetSession(r.Context(), sessionID, WithForceRefresh())
+				session, err = sm.GetSession(r.Context(), sessionID, WithGetForceRefresh())
 			}
-
 			if err != nil {
 				http.Error(w, "Failed to retrieve session", http.StatusInternalServerError)
 				return
@@ -729,7 +783,7 @@ func addToCartHandler(sm *SessionManager) http.HandlerFunc {
 				return
 			}
 
-			_, err = sm.UpdateSession(r.Context(), session, WithCheckAttributeVersion())
+			_, err = sm.UpdateSession(r.Context(), session, WithUpdateCheckAttributeVersion())
 			if err != nil {
 				if err.Error() == "attribute cart version mismatch" {
 					continue // Retry
@@ -784,7 +838,7 @@ func updateUserSessionWithVersionCheck(sm *SessionManager) http.HandlerFunc {
 			}
 
 			// Try to update with session version check
-			_, err = sm.UpdateSession(r.Context(), session, WithCheckVersion())
+			_, err = sm.UpdateSession(r.Context(), session, WithUpdateCheckVersion())
 			if errors.Is(err, ErrSessionVersionIsOutdated) {
 				// Version conflict, retry
 				continue

@@ -96,20 +96,21 @@ type SessionAttributeValue struct {
 }
 
 type Session struct {
-	ID           uuid.UUID  `db:"id"`
-	UserID       uuid.UUID  `db:"user_id"`
-	GroupID      *uuid.UUID `db:"group_id"`
-	LastAccessed time.Time  `db:"last_accessed"`
-	ExpiresAt    time.Time  `db:"expires_at"`
-	UpdatedAt    time.Time  `db:"updated_at"`
-	Version      int        `db:"version"`
-	attributes   map[string]SessionAttributeValue
-	changed      map[string]bool
-	deleted      map[string]bool
-	sm           *SessionManager
-	fromCache    bool
-	invalidated  bool
-	groupId      *uuid.UUID
+	ID                uuid.UUID  `db:"id"`
+	UserID            uuid.UUID  `db:"user_id"`
+	GroupID           *uuid.UUID `db:"group_id"`
+	LastAccessed      time.Time  `db:"last_accessed"`
+	ExpiresAt         time.Time  `db:"expires_at"`
+	UpdatedAt         time.Time  `db:"updated_at"`
+	Version           int        `db:"version"`
+	IncludeInactivity bool       `db:"include_inactivity"`
+	attributes        map[string]SessionAttributeValue
+	changed           map[string]bool
+	deleted           map[string]bool
+	sm                *SessionManager
+	fromCache         bool
+	invalidated       bool
+	groupId           *uuid.UUID
 }
 
 // Invalidate marks the session as invalidated
@@ -316,7 +317,8 @@ func (sm *SessionManager) createSchemaAndTables() error {
                 "last_accessed" TIMESTAMP WITH TIME ZONE NOT NULL,
                 "expires_at" TIMESTAMP WITH TIME ZONE NOT NULL,
                 "updated_at" TIMESTAMP WITH TIME ZONE NOT NULL,
-                "version" INTEGER NOT NULL DEFAULT 1
+                "version" INTEGER NOT NULL DEFAULT 1,
+                "include_inactivity" BOOLEAN NOT NULL DEFAULT true
             );`, sm.getTableName("sessions")),
 		fmt.Sprintf(`
             CREATE TABLE IF NOT EXISTS %s (
@@ -331,12 +333,12 @@ func (sm *SessionManager) createSchemaAndTables() error {
 			sm.Config.TablePrefix, sm.getTableName("sessions")),
 		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS "%ssessions_expires_at_idx" ON %s ("expires_at");`,
 			sm.Config.TablePrefix, sm.getTableName("sessions")),
-		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS "%ssessions_last_accessed_idx" ON %s ("last_accessed");`,
-			sm.Config.TablePrefix, sm.getTableName("sessions")),
 		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS "%ssessions_updated_at_idx" ON %s ("updated_at");`,
 			sm.Config.TablePrefix, sm.getTableName("sessions")),
 		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS "%ssession_attributes_expires_at_session_id_idx" ON %s ("expires_at", "session_id");`,
 			sm.Config.TablePrefix, sm.getTableName("session_attributes")),
+		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS "%ssessions_last_accessed_include_inactivity_idx" ON %s ("last_accessed", "include_inactivity");`,
+			sm.Config.TablePrefix, sm.getTableName("sessions")),
 	}...)
 
 	for _, query := range queries {
@@ -352,17 +354,29 @@ func (sm *SessionManager) createSchemaAndTables() error {
 // CreateSessionOption is a function type that modifies Session during creation
 type CreateSessionOption func(*Session)
 
-// WithGroupID sets the GroupID for the session during creation. Can be an account or tenant id. You can also change it before updateSession.
-func WithGroupID(groupID uuid.UUID) CreateSessionOption {
+// WithCreateGroupID sets the GroupID for the session during creation. Can be an account or tenant id. You can also change it before updateSession.
+func WithCreateGroupID(groupID uuid.UUID) CreateSessionOption {
 	return func(s *Session) {
 		s.GroupID = &groupID
 		s.groupId = s.GroupID
 	}
 }
 
-// ... (existing code)
+// WithIncludeInactivity sets the IncludeInactivity flag for the session during creation
+func WithCreateIncludeInactivity(include bool) CreateSessionOption {
+	return func(s *Session) {
+		s.IncludeInactivity = include
+	}
+}
 
-// CreateSession creates a new session for the given user with the provided attributes and optional group ID.
+// WithUpdateAttExpiresAt sets a custom ExpiresAt time for the session during creation
+func WithCreateExpiresAt(expiresAt time.Time) CreateSessionOption {
+	return func(s *Session) {
+		s.ExpiresAt = expiresAt
+	}
+}
+
+// CreateSession creates a new session for the given user with the provided attributes and options
 func (sm *SessionManager) CreateSession(ctx context.Context, userID uuid.UUID, attributes map[string]SessionAttributeValue, opts ...CreateSessionOption) (*Session, error) {
 	sessionID, err := uuid.NewRandom()
 	if err != nil {
@@ -372,32 +386,33 @@ func (sm *SessionManager) CreateSession(ctx context.Context, userID uuid.UUID, a
 	now := sm.clock.Now()
 	expiresAt := now.Add(sm.Config.SessionExpiration)
 
-	tx, err := sm.db.BeginTxx(ctx, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to begin transaction: %w", err)
-	}
-	defer tx.Rollback()
-
 	session := &Session{
-		ID:           sessionID,
-		UserID:       userID,
-		LastAccessed: now,
-		ExpiresAt:    expiresAt,
-		UpdatedAt:    now,
-		Version:      1,
-		attributes:   attributes,
-		changed:      make(map[string]bool),
-		deleted:      make(map[string]bool),
-		sm:           sm,
+		ID:                sessionID,
+		UserID:            userID,
+		LastAccessed:      now,
+		ExpiresAt:         expiresAt,
+		UpdatedAt:         now,
+		Version:           1,
+		IncludeInactivity: true,
+		attributes:        attributes,
+		changed:           make(map[string]bool),
+		deleted:           make(map[string]bool),
+		sm:                sm,
 	}
 
 	for _, opt := range opts {
 		opt(session)
 	}
 
+	tx, err := sm.db.BeginTxx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
 	query := fmt.Sprintf(`
-        INSERT INTO %s ("id", "user_id", "group_id", "last_accessed", "expires_at", "updated_at", "version")
-        VALUES (:id, :user_id, :group_id, :last_accessed, :expires_at, :updated_at, :version)
+        INSERT INTO %s ("id", "user_id", "group_id", "last_accessed", "expires_at", "updated_at", "version", "include_inactivity")
+        VALUES (:id, :user_id, :group_id, :last_accessed, :expires_at, :updated_at, :version, :include_inactivity)
     `, sm.getTableName("sessions"))
 
 	_, err = tx.NamedExecContext(ctx, query, session)
@@ -456,15 +471,15 @@ func (sm *SessionManager) CreateSession(ctx context.Context, userID uuid.UUID, a
 // SessionOption is a function type that modifies GetSessionOptions
 type SessionOption func(*GetSessionOptions)
 
-// WithDoNotUpdateSessionLastAccess sets the DoNotUpdateSessionLastAccess option
-func WithDoNotUpdateSessionLastAccess() SessionOption {
+// WithGetDoNotUpdateSessionLastAccess sets the DoNotUpdateSessionLastAccess option
+func WithGetDoNotUpdateSessionLastAccess() SessionOption {
 	return func(opts *GetSessionOptions) {
 		opts.DoNotUpdateSessionLastAccess = true
 	}
 }
 
-// WithForceRefresh sets the ForceRefresh option
-func WithForceRefresh() SessionOption {
+// WithGetForceRefresh sets the ForceRefresh option
+func WithGetForceRefresh() SessionOption {
 	return func(opts *GetSessionOptions) {
 		opts.ForceRefresh = true
 	}
@@ -490,7 +505,6 @@ func (sm *SessionManager) GetSessionWithVersion(ctx context.Context, sessionID u
 				sm.mutex.RUnlock()
 				opts.ForceRefresh = true
 			} else {
-				// Existing code continues here
 				sessionCopy := item.session.deepCopy()
 				sessionCopy.fromCache = true
 				sm.mutex.RUnlock()
@@ -515,7 +529,7 @@ func (sm *SessionManager) GetSessionWithVersion(ctx context.Context, sessionID u
 	}
 
 	query := fmt.Sprintf(`
-        SELECT "id", "user_id", "group_id", "last_accessed", "expires_at", "updated_at", "version"
+        SELECT "id", "user_id", "group_id", "last_accessed", "expires_at", "updated_at", "version", "include_inactivity"
             FROM %s
             WHERE "id" = $1
     `, sm.getTableName("sessions"))
@@ -563,30 +577,46 @@ type UpdateSessionOptions struct {
 	CheckVersion          bool
 	CheckAttributeVersion bool
 	DoNotNotify           bool
+	IncludeInactivity     *bool
+	ExpiresAt             *time.Time
 }
 
-// WithCheckVersion sets the CheckVersion option to true
-func WithCheckVersion() UpdateSessionOption {
+// WithUpdateCheckVersion sets the CheckVersion option to true
+func WithUpdateCheckVersion() UpdateSessionOption {
 	return func(opts *UpdateSessionOptions) {
 		opts.CheckVersion = true
 	}
 }
 
-// WithCheckAttributeVersion sets the CheckAttributeVersion option
-func WithCheckAttributeVersion() UpdateSessionOption {
+// WithUpdateCheckAttributeVersion sets the CheckAttributeVersion option
+func WithUpdateCheckAttributeVersion() UpdateSessionOption {
 	return func(opts *UpdateSessionOptions) {
 		opts.CheckAttributeVersion = true
 	}
 }
 
-// WithDoNotNotify sets the DoNotNotify option
-func WithDoNotNotify() UpdateSessionOption {
+// WithUpdateDoNotNotify sets the DoNotNotify option
+func WithUpdateDoNotNotify() UpdateSessionOption {
 	return func(opts *UpdateSessionOptions) {
 		opts.DoNotNotify = true
 	}
 }
 
-// UpdateSession updates the session in the database with any changes made to its attributes.
+// WithUpdateIncludeInactivity sets a new IncludeInactivity flag for the session
+func WithUpdateIncludeInactivity(include bool) UpdateSessionOption {
+	return func(opts *UpdateSessionOptions) {
+		opts.IncludeInactivity = &include
+	}
+}
+
+// WithUpdateExpiresAt sets a new ExpiresAt time for the session
+func WithUpdateExpiresAt(expiresAt time.Time) UpdateSessionOption {
+	return func(opts *UpdateSessionOptions) {
+		opts.ExpiresAt = &expiresAt
+	}
+}
+
+// UpdateSession updates the session in the database with any changes made to its attributes and options
 func (sm *SessionManager) UpdateSession(ctx context.Context, session *Session, options ...UpdateSessionOption) (*Session, error) {
 	session = session.deepCopy()
 	opts := UpdateSessionOptions{}
@@ -695,22 +725,42 @@ func (sm *SessionManager) UpdateSession(ctx context.Context, session *Session, o
 	now := sm.clock.Now()
 	updateQueryTemplate := `
         UPDATE %s
-        SET "updated_at" = $1, "version" = "version" + 1, "group_id" = $3
+        SET "updated_at" = $1, "version" = "version" + 1, "group_id" = $3%s%s
         WHERE "id" = $2%s 
-        RETURNING "id", "user_id", "group_id", "last_accessed", "expires_at", "updated_at", "version"
+        RETURNING "id", "user_id", "group_id", "last_accessed", "expires_at", "updated_at", "version", "include_inactivity"
     `
-	var updateQuery string
-	var updateQueryRow *sql.Row
-	if opts.CheckVersion {
-		updateQuery = fmt.Sprintf(updateQueryTemplate, sm.getTableName("sessions"), ` AND "version" = $4`)
-		updateQueryRow = tx.QueryRowContext(ctx, updateQuery, now, session.ID, session.GroupID, session.Version)
-	} else {
-		updateQuery = fmt.Sprintf(updateQueryTemplate, sm.getTableName("sessions"), "")
-		updateQueryRow = tx.QueryRowContext(ctx, updateQuery, now, session.ID, session.GroupID)
+
+	var queryParams []interface{}
+	queryParams = append(queryParams, now, session.ID, session.GroupID)
+
+	expiresAtClause := ""
+	includeInactivityClause := ""
+	versionCheck := ""
+
+	if opts.ExpiresAt != nil {
+		expiresAtClause = ", \"expires_at\" = $" + strconv.Itoa(len(queryParams)+1)
+		queryParams = append(queryParams, *opts.ExpiresAt)
 	}
 
+	if opts.IncludeInactivity != nil {
+		includeInactivityClause = ", \"include_inactivity\" = $" + strconv.Itoa(len(queryParams)+1)
+		queryParams = append(queryParams, *opts.IncludeInactivity)
+	}
+
+	if opts.CheckVersion {
+		versionCheck = " AND \"version\" = $" + strconv.Itoa(len(queryParams)+1)
+		queryParams = append(queryParams, session.Version)
+	}
+
+	updateQuery := fmt.Sprintf(updateQueryTemplate,
+		sm.getTableName("sessions"),
+		expiresAtClause,
+		includeInactivityClause,
+		versionCheck,
+	)
+
 	var updatedSession Session
-	err = updateQueryRow.Scan(
+	err = tx.QueryRowContext(ctx, updateQuery, queryParams...).Scan(
 		&updatedSession.ID,
 		&updatedSession.UserID,
 		&updatedSession.GroupID,
@@ -718,6 +768,7 @@ func (sm *SessionManager) UpdateSession(ctx context.Context, session *Session, o
 		&updatedSession.ExpiresAt,
 		&updatedSession.UpdatedAt,
 		&updatedSession.Version,
+		&updatedSession.IncludeInactivity,
 	)
 	updatedSession.groupId = updatedSession.GroupID
 	if err != nil {
@@ -1200,8 +1251,8 @@ type UpdateAttributeOptions struct {
 	ExpiresAt *time.Time
 }
 
-// WithExpiresAt sets the ExpiresAt option
-func WithExpiresAt(expiresAt time.Time) UpdateAttributeOption {
+// WithUpdateAttExpiresAt sets the ExpiresAt option
+func WithUpdateAttExpiresAt(expiresAt time.Time) UpdateAttributeOption {
 	return func(opts *UpdateAttributeOptions) {
 		opts.ExpiresAt = &expiresAt
 	}
@@ -1354,20 +1405,21 @@ func (s *Session) deepCopy() *Session {
 	}
 
 	return &Session{
-		ID:           s.ID,
-		UserID:       s.UserID,
-		GroupID:      s.GroupID,
-		groupId:      s.groupId,
-		LastAccessed: s.LastAccessed,
-		ExpiresAt:    s.ExpiresAt,
-		UpdatedAt:    s.UpdatedAt,
-		Version:      s.Version,
-		attributes:   copiedAttributes,
-		changed:      copiedChanged,
-		deleted:      copiedDeleted,
-		sm:           s.sm,
-		fromCache:    s.fromCache,
-		invalidated:  s.invalidated,
+		ID:                s.ID,
+		UserID:            s.UserID,
+		GroupID:           s.GroupID,
+		groupId:           s.groupId,
+		LastAccessed:      s.LastAccessed,
+		ExpiresAt:         s.ExpiresAt,
+		UpdatedAt:         s.UpdatedAt,
+		Version:           s.Version,
+		IncludeInactivity: s.IncludeInactivity,
+		attributes:        copiedAttributes,
+		changed:           copiedChanged,
+		deleted:           copiedDeleted,
+		sm:                s.sm,
+		fromCache:         s.fromCache,
+		invalidated:       s.invalidated,
 	}
 }
 
@@ -1393,7 +1445,7 @@ func (sm *SessionManager) cleanupExpiredSessions(ctx context.Context) error {
 	query := fmt.Sprintf(`
         WITH expired_sessions AS (
         DELETE FROM %s
-        WHERE "expires_at" < $1 OR "last_accessed" < $2
+        WHERE "expires_at" < $1 OR ("include_inactivity" = true AND "last_accessed" < $2)
         RETURNING "id"
         ),
         expired_attributes AS (

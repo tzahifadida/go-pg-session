@@ -57,7 +57,7 @@ func TestReadmeExamplesPrev(t *testing.T) {
 	fakeClock.Advance(time.Second)
 
 	// Example: Retrieving a Session
-	retrievedSession, err := sessionManager.GetSessionWithVersion(context.Background(), session.ID, 1, WithDoNotUpdateSessionLastAccess())
+	retrievedSession, err := sessionManager.GetSessionWithVersion(context.Background(), session.ID, 1, WithGetDoNotUpdateSessionLastAccess())
 	require.NoError(t, err)
 	log.Printf("Retrieved session for user ID: %s", retrievedSession.UserID)
 
@@ -174,7 +174,7 @@ func TestSessionManager(t *testing.T) {
 		// Advance the clock
 		fakeClock.Advance(time.Second)
 
-		retrievedSession, err := sm.GetSessionWithVersion(context.Background(), session.ID, 1, WithDoNotUpdateSessionLastAccess())
+		retrievedSession, err := sm.GetSessionWithVersion(context.Background(), session.ID, 1, WithGetDoNotUpdateSessionLastAccess())
 		require.NoError(t, err)
 		assert.Equal(t, userID, retrievedSession.UserID)
 		keyValue, ok := retrievedSession.GetAttributes()["key"].Value.(string)
@@ -525,7 +525,7 @@ func TestSessionManager(t *testing.T) {
 		sm.processLastAccessUpdates()
 		sm.cleanupExpiredSessions(ctx)
 
-		retrievedSession, err := sm.GetSessionWithVersion(context.Background(), session.ID, session.Version, WithForceRefresh())
+		retrievedSession, err := sm.GetSessionWithVersion(context.Background(), session.ID, session.Version, WithGetForceRefresh())
 		require.NoError(t, err)
 
 		// The expiring attribute should be gone
@@ -541,7 +541,7 @@ func TestSessionManager(t *testing.T) {
 
 		// Add a new expiring attribute
 		futureTime := fakeClock.Now().Add(time.Hour)
-		err = retrievedSession.UpdateAttribute("new_expiring", "new_expiring_value", WithExpiresAt(futureTime))
+		err = retrievedSession.UpdateAttribute("new_expiring", "new_expiring_value", WithUpdateAttExpiresAt(futureTime))
 		require.NoError(t, err)
 
 		updatedSession, err := sm.UpdateSession(context.Background(), retrievedSession)
@@ -605,7 +605,7 @@ func TestSessionManager(t *testing.T) {
 					err = retrievedSession.UpdateAttribute("counter", strconv.Itoa(counter+1))
 					require.NoError(t, err)
 
-					_, err = sm.UpdateSession(context.Background(), retrievedSession, WithCheckVersion())
+					_, err = sm.UpdateSession(context.Background(), retrievedSession, WithUpdateCheckVersion())
 					if err == nil {
 						break
 					}
@@ -686,7 +686,7 @@ func TestSessionManagerWithRealClock(t *testing.T) {
 		session, err := sm.CreateSession(context.Background(), userID, attributes)
 		require.NoError(t, err)
 
-		initialSession, err := sm.GetSessionWithVersion(context.Background(), session.ID, 1, WithDoNotUpdateSessionLastAccess())
+		initialSession, err := sm.GetSessionWithVersion(context.Background(), session.ID, 1, WithGetDoNotUpdateSessionLastAccess())
 		require.NoError(t, err)
 
 		// Wait for the last access time to be updated
@@ -1148,14 +1148,14 @@ func TestUpdateSessionWithCheckVersion(t *testing.T) {
 		// Update the session with checkVersion = true
 		err = session.UpdateAttribute("key", "updated_value")
 		require.NoError(t, err)
-		updatedSession, err := sm.UpdateSession(context.Background(), session, WithCheckVersion())
+		updatedSession, err := sm.UpdateSession(context.Background(), session, WithUpdateCheckVersion())
 		require.NoError(t, err)
 		assert.Equal(t, 2, updatedSession.Version)
 
 		// Try to update the session again with the old version
 		err = session.UpdateAttribute("key", "another_value")
 		require.NoError(t, err)
-		_, err = sm.UpdateSession(context.Background(), session, WithCheckVersion())
+		_, err = sm.UpdateSession(context.Background(), session, WithUpdateCheckVersion())
 		assert.Equal(t, ErrSessionVersionIsOutdated, err)
 	})
 
@@ -1377,7 +1377,7 @@ func TestSessionManagerResilience(t *testing.T) {
 		time.Sleep(5 * time.Second)
 
 		// Try to get the session (this should trigger a refresh)
-		retrievedSession, err := sm.GetSessionWithVersion(context.Background(), session.ID, session.Version, WithForceRefresh())
+		retrievedSession, err := sm.GetSessionWithVersion(context.Background(), session.ID, session.Version, WithGetForceRefresh())
 		require.NoError(t, err)
 		assert.Equal(t, session.ID, retrievedSession.ID)
 		assert.Equal(t, "initial_value", retrievedSession.GetAttributes()["key"].Value)
@@ -1555,7 +1555,7 @@ func TestCheckAttributeVersion(t *testing.T) {
 		err = session.UpdateAttribute("key1", "value2")
 		require.NoError(t, err)
 
-		updatedSession, err := sm.UpdateSession(context.Background(), session, WithCheckAttributeVersion())
+		updatedSession, err := sm.UpdateSession(context.Background(), session, WithUpdateCheckAttributeVersion())
 		require.NoError(t, err)
 
 		// Verify the attribute was updated
@@ -1581,13 +1581,13 @@ func TestCheckAttributeVersion(t *testing.T) {
 		// Update the attribute in the original session
 		err = session.UpdateAttribute("key1", "value2")
 		require.NoError(t, err)
-		_, err = sm.UpdateSession(context.Background(), session, WithCheckAttributeVersion())
+		_, err = sm.UpdateSession(context.Background(), session, WithUpdateCheckAttributeVersion())
 		require.NoError(t, err)
 
 		// Try to update the attribute in the concurrent session
 		err = concurrentSession.UpdateAttribute("key1", "value3")
 		require.NoError(t, err)
-		_, err = sm.UpdateSession(context.Background(), concurrentSession, WithCheckAttributeVersion())
+		_, err = sm.UpdateSession(context.Background(), concurrentSession, WithUpdateCheckAttributeVersion())
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "attribute key1 version mismatch")
 	})
@@ -1610,7 +1610,7 @@ func TestCheckAttributeVersion(t *testing.T) {
 		err = session.UpdateAttribute("key3", "new_value3")
 		require.NoError(t, err)
 
-		updatedSession, err := sm.UpdateSession(context.Background(), session, WithCheckAttributeVersion())
+		updatedSession, err := sm.UpdateSession(context.Background(), session, WithUpdateCheckAttributeVersion())
 		require.NoError(t, err)
 
 		// Verify all attributes were updated
@@ -1950,7 +1950,7 @@ func TestGroupIDFunctionality(t *testing.T) {
 		}
 
 		// Create a session with a group ID
-		session, err := sm.CreateSession(context.Background(), userID, attributes, WithGroupID(groupID))
+		session, err := sm.CreateSession(context.Background(), userID, attributes, WithCreateGroupID(groupID))
 		require.NoError(t, err)
 		assert.NotEqual(t, uuid.Nil, session.ID)
 		assert.NotEqual(t, uuid.Nil, session.GroupID)
@@ -1992,7 +1992,7 @@ func TestGroupIDFunctionality(t *testing.T) {
 		}
 
 		// Create a session with a group ID
-		session, err := sm.CreateSession(context.Background(), userID, attributes, WithGroupID(groupID))
+		session, err := sm.CreateSession(context.Background(), userID, attributes, WithCreateGroupID(groupID))
 		require.NoError(t, err)
 		assert.NotEqual(t, uuid.Nil, session.ID)
 		assert.NotEqual(t, uuid.Nil, session.GroupID)
@@ -2051,14 +2051,14 @@ func TestGroupIDFunctionality(t *testing.T) {
 		sessionIDs := make([]uuid.UUID, numSessions)
 		for i := 0; i < numSessions; i++ {
 			userID := uuid.New()
-			session, err := sm.CreateSession(context.Background(), userID, attributes, WithGroupID(groupID))
+			session, err := sm.CreateSession(context.Background(), userID, attributes, WithCreateGroupID(groupID))
 			require.NoError(t, err)
 			sessionIDs[i] = session.ID
 		}
 
 		// Create a session with a different group ID
 		differentGroupID := uuid.New()
-		differentGroupSession, err := sm.CreateSession(context.Background(), uuid.New(), attributes, WithGroupID(differentGroupID))
+		differentGroupSession, err := sm.CreateSession(context.Background(), uuid.New(), attributes, WithCreateGroupID(differentGroupID))
 		require.NoError(t, err)
 
 		// Create a session without a group ID
@@ -2091,7 +2091,7 @@ func TestGroupIDFunctionality(t *testing.T) {
 		}
 
 		// Create a session with a group ID
-		session, err := sm.CreateSession(context.Background(), uuid.New(), attributes, WithGroupID(groupID))
+		session, err := sm.CreateSession(context.Background(), uuid.New(), attributes, WithCreateGroupID(groupID))
 		require.NoError(t, err)
 
 		// Create another SessionManager to simulate a different node
@@ -2210,5 +2210,111 @@ func TestSessionInvalidation(t *testing.T) {
 		// We should be able to update the retrieved session
 		_, err = sm.UpdateSession(context.Background(), retrievedSession)
 		assert.NoError(t, err)
+	})
+}
+
+func TestIncludeInactivityAndExpiresAt(t *testing.T) {
+	ctx := context.Background()
+
+	// Start PostgreSQL container
+	postgres, db, _, err := startPostgresContainer(ctx)
+	require.NoError(t, err)
+	defer postgres.Terminate(ctx)
+
+	// Create a new SessionManager
+	cfg := DefaultConfig()
+	cfg.CreateSchemaIfMissing = true
+	cfg.CacheSize = 100
+	cfg.InactivityDuration = 1 * time.Hour
+
+	sm, err := NewSessionManager(ctx, cfg, db)
+	require.NoError(t, err)
+	defer sm.Shutdown(context.Background())
+
+	// Set up a fake clock for testing
+	fakeClock := clockwork.NewFakeClock()
+	sm.setClock(fakeClock)
+
+	t.Run("CreateSessionWithIncludeInactivityFalse", func(t *testing.T) {
+		userID := uuid.New()
+		attributes := map[string]SessionAttributeValue{
+			"key": {Value: "value", Marshaled: false},
+		}
+
+		initialExpiresAt := fakeClock.Now().Add(24 * time.Hour)
+		session, err := sm.CreateSession(context.Background(), userID, attributes,
+			WithCreateIncludeInactivity(false),
+			WithCreateExpiresAt(initialExpiresAt))
+		require.NoError(t, err)
+		assert.False(t, session.IncludeInactivity)
+		assert.Equal(t, initialExpiresAt, session.ExpiresAt)
+
+		// Advance clock past inactivity duration
+		fakeClock.Advance(2 * time.Hour)
+
+		// Session should still be retrievable as IncludeInactivity is false
+		retrievedSession, err := sm.GetSessionWithVersion(context.Background(), session.ID, session.Version)
+		require.NoError(t, err)
+		assert.NotNil(t, retrievedSession)
+	})
+
+	t.Run("UpdateSessionExpiresAt", func(t *testing.T) {
+		userID := uuid.New()
+		attributes := map[string]SessionAttributeValue{
+			"key": {Value: "value", Marshaled: false},
+		}
+
+		initialExpiresAt := fakeClock.Now().Add(24 * time.Hour)
+		session, err := sm.CreateSession(context.Background(), userID, attributes,
+			WithCreateExpiresAt(initialExpiresAt))
+		require.NoError(t, err)
+
+		// Update ExpiresAt
+		newExpiresAt := fakeClock.Now().Add(48 * time.Hour)
+		updatedSession, err := sm.UpdateSession(context.Background(), session,
+			WithUpdateExpiresAt(newExpiresAt))
+		require.NoError(t, err)
+		assert.True(t, newExpiresAt.Equal(updatedSession.ExpiresAt),
+			"Expected %v, but got %v", newExpiresAt, updatedSession.ExpiresAt)
+
+		// Verify the update persisted
+		retrievedSession, err := sm.GetSessionWithVersion(context.Background(), session.ID, updatedSession.Version)
+		require.NoError(t, err)
+		assert.True(t, newExpiresAt.Equal(retrievedSession.ExpiresAt),
+			"Expected %v, but got %v", newExpiresAt, retrievedSession.ExpiresAt)
+	})
+
+	t.Run("CleanupWithIncludeInactivity", func(t *testing.T) {
+		userID1 := uuid.New()
+		userID2 := uuid.New()
+		attributes := map[string]SessionAttributeValue{
+			"key": {Value: "value", Marshaled: false},
+		}
+
+		// Create session with IncludeInactivity true
+		session1, err := sm.CreateSession(context.Background(), userID1, attributes,
+			WithCreateIncludeInactivity(true))
+		require.NoError(t, err)
+
+		// Create session with IncludeInactivity false
+		session2, err := sm.CreateSession(context.Background(), userID2, attributes,
+			WithCreateIncludeInactivity(false))
+		require.NoError(t, err)
+
+		// Advance clock past inactivity duration
+		fakeClock.Advance(2 * time.Hour)
+
+		// Run cleanup
+		err = sm.cleanupExpiredSessions(context.Background())
+		require.NoError(t, err)
+
+		// Session1 should be deleted due to inactivity
+		_, err = sm.GetSessionWithVersion(context.Background(), session1.ID, session1.Version)
+		assert.Error(t, err)
+
+		// Session2 should still exist as it ignores inactivity
+		retrievedSession2, err := sm.GetSessionWithVersion(context.Background(), session2.ID, session2.Version)
+		require.NoError(t, err)
+		assert.NotNil(t, retrievedSession2)
 	})
 }
