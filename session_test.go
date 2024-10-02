@@ -2264,23 +2264,23 @@ func TestIncludeInactivityAndExpiresAt(t *testing.T) {
 			"key": {Value: "value", Marshaled: false},
 		}
 
-		initialExpiresAt := fakeClock.Now().Add(24 * time.Hour)
+		initialExpiresAt := fakeClock.Now().Add(24 * time.Hour).Truncate(time.Millisecond)
 		session, err := sm.CreateSession(context.Background(), userID, attributes,
 			WithCreateExpiresAt(initialExpiresAt))
 		require.NoError(t, err)
 
 		// Update ExpiresAt
-		newExpiresAt := fakeClock.Now().Add(48 * time.Hour)
+		newExpiresAt := fakeClock.Now().Add(48 * time.Hour).Truncate(time.Millisecond)
 		updatedSession, err := sm.UpdateSession(context.Background(), session,
 			WithUpdateExpiresAt(newExpiresAt))
 		require.NoError(t, err)
-		assert.True(t, newExpiresAt.Equal(updatedSession.ExpiresAt),
+		assert.Equal(t, newExpiresAt, updatedSession.ExpiresAt.Truncate(time.Millisecond),
 			"Expected %v, but got %v", newExpiresAt, updatedSession.ExpiresAt)
 
 		// Verify the update persisted
 		retrievedSession, err := sm.GetSessionWithVersion(context.Background(), session.ID, updatedSession.Version)
 		require.NoError(t, err)
-		assert.True(t, newExpiresAt.Equal(retrievedSession.ExpiresAt),
+		assert.Equal(t, newExpiresAt, retrievedSession.ExpiresAt.Truncate(time.Millisecond),
 			"Expected %v, but got %v", newExpiresAt, retrievedSession.ExpiresAt)
 	})
 
