@@ -84,7 +84,7 @@ Example use cases:
   ```go
   // Grant elevated access for 15 minutes after step-up authentication
   elevatedExpiry := time.Now().Add(15 * time.Minute)
-  session.UpdateAttribute("elevated_access", "true", gopgsession.WithExpiresAt(elevatedExpiry))
+  session.UpdateAttribute("elevated_access", "true", gopgsession.WithUpdateAttExpiresAt(elevatedExpiry))
   ```
 
 - **Limited-Time Offers**: Store time-sensitive promotional codes or offers that automatically expire:
@@ -92,7 +92,7 @@ Example use cases:
   ```go
   // Set a promotional offer that expires in 1 hour
   offerExpiry := time.Now().Add(1 * time.Hour)
-  session.UpdateAttribute("promo_code", "FLASH_SALE_20", gopgsession.WithExpiresAt(offerExpiry))
+  session.UpdateAttribute("promo_code", "FLASH_SALE_20", gopgsession.WithUpdateAttExpiresAt(offerExpiry))
   ```
 
 - **Abandoned UI Processes**: For multi-step processes in your UI, store temporary state that cleans itself up if the user abandons the process:
@@ -100,7 +100,7 @@ Example use cases:
   ```go
   // Store temporary form data for a multi-step process, expires in 30 minutes
   formExpiry := time.Now().Add(30 * time.Minute)
-  session.UpdateAttribute("temp_form_data", jsonEncodedFormData, gopgsession.WithExpiresAt(formExpiry))
+  session.UpdateAttribute("temp_form_data", jsonEncodedFormData, gopgsession.WithUpdateAttExpiresAt(formExpiry))
   ```
 
 - **Temporary Access Tokens**: Store short-lived access tokens for external services:
@@ -108,7 +108,7 @@ Example use cases:
   ```go
   // Store an API token that expires in 5 minutes
   tokenExpiry := time.Now().Add(5 * time.Minute)
-  session.UpdateAttribute("external_api_token", "token123", gopgsession.WithExpiresAt(tokenExpiry))
+  session.UpdateAttribute("external_api_token", "token123", gopgsession.WithUpdateAttExpiresAt(tokenExpiry))
   ```
 
 By leveraging attribute-level expiration, you can implement these features securely and efficiently, automatically cleaning up sensitive or temporary data without manual intervention or complex cleanup processes. This feature allows for more nuanced session management, enhancing both security and user experience in your application.
@@ -198,22 +198,22 @@ Initialize a `SessionManager` with the configuration and a PostgreSQL database c
 
 ```go
 import (
-    "database/sql"
-    _ "github.com/jackc/pgx/v5/stdlib"
-    "github.com/tzahifadida/go-pg-session"
+"database/sql"
+_ "github.com/jackc/pgx/v5/stdlib"
+"github.com/tzahifadida/go-pg-session"
 )
 
 // Open a database connection
 db, err := sql.Open("pgx", "postgres://username:password@localhost/dbname?sslmode=disable")
 if err != nil {
-    log.Fatalf("Failed to open database: %v", err)
+log.Fatalf("Failed to open database: %v", err)
 }
 defer db.Close()
 
 // Create a new SessionManager
 sessionManager, err := gopgsession.NewSessionManager(ctx, cfg, db)
 if err != nil {
-    log.Fatalf("Failed to initialize session manager: %v", err)
+log.Fatalf("Failed to initialize session manager: %v", err)
 }
 defer sessionManager.Shutdown(context.Background())
 ```
@@ -226,16 +226,16 @@ Create a session for a user with initial attributes and custom options.
 ctx := context.Background()
 userID := uuid.New()
 attributes := map[string]gopgsession.SessionAttributeValue{
-    "role":        {Value: "admin"},
-    "preferences": {Value: map[string]string{"theme": "dark"}},
+"role":        {Value: "admin"},
+"preferences": {Value: map[string]string{"theme": "dark"}},
 }
 
 // Create a session that doesn't expire due to inactivity and has a custom expiration time
 session, err := sessionManager.CreateSession(ctx, userID, attributes,
-    gopgsession.WithCreateIncludeInactivity(false),
-    gopgsession.WithCreateExpiresAt(time.Now().Add(48 * time.Hour)))
+gopgsession.WithCreateIncludeInactivity(false),
+gopgsession.WithCreateExpiresAt(time.Now().Add(48 * time.Hour)))
 if err != nil {
-    log.Fatalf("Failed to create session: %v", err)
+log.Fatalf("Failed to create session: %v", err)
 }
 
 log.Printf("Created session with ID: %s", session.ID)
@@ -248,19 +248,19 @@ Retrieve a session by its ID. You can use `GetSession` with optional parameters 
 ```go
 session, err := sessionManager.GetSession(ctx, sessionID)
 if err != nil {
-    log.Fatalf("Failed to retrieve session: %v", err)
+log.Fatalf("Failed to retrieve session: %v", err)
 }
 
 // With options
-session, err := sessionManager.GetSession(ctx, sessionID, gopgsession.WithDoNotUpdateSessionLastAccess(), gopgsession.WithForceRefresh())
+session, err := sessionManager.GetSession(ctx, sessionID, gopgsession.WithGetDoNotUpdateSessionLastAccess(), gopgsession.WithGetForceRefresh())
 if err != nil {
-    log.Fatalf("Failed to retrieve session: %v", err)
+log.Fatalf("Failed to retrieve session: %v", err)
 }
 
 var preferences map[string]string
 _, err = session.GetAttributeAndRetainUnmarshaled("preferences", &preferences)
 if err != nil {
-    log.Fatalf("Failed to get preferences: %v", err)
+log.Fatalf("Failed to get preferences: %v", err)
 }
 
 log.Printf("User preferences: %v", preferences)
@@ -273,15 +273,15 @@ Update the expiration time of an existing session.
 ```go
 session, err := sessionManager.GetSession(ctx, sessionID)
 if err != nil {
-    log.Fatalf("Failed to retrieve session: %v", err)
+log.Fatalf("Failed to retrieve session: %v", err)
 }
 
 // Extend the session's expiration time
 newExpiresAt := time.Now().Add(24 * time.Hour)
-updatedSession, err := sessionManager.UpdateSession(ctx, session, 
-    gopgsession.WithUpdateExpiresAt(newExpiresAt))
+updatedSession, err := sessionManager.UpdateSession(ctx, session,
+gopgsession.WithUpdateExpiresAt(newExpiresAt))
 if err != nil {
-    log.Fatalf("Failed to update session expiration: %v", err)
+log.Fatalf("Failed to update session expiration: %v", err)
 }
 
 log.Printf("Updated session expiration to: %v", updatedSession.ExpiresAt)
@@ -294,14 +294,14 @@ Change whether a session should expire due to inactivity.
 ```go
 session, err := sessionManager.GetSession(ctx, sessionID)
 if err != nil {
-    log.Fatalf("Failed to retrieve session: %v", err)
+log.Fatalf("Failed to retrieve session: %v", err)
 }
 
 // Disable inactivity-based expiration for this session
-updatedSession, err := sessionManager.UpdateSession(ctx, session, 
-    gopgsession.WithUpdateIncludeInactivity(false))
+updatedSession, err := sessionManager.UpdateSession(ctx, session,
+gopgsession.WithUpdateIncludeInactivity(false))
 if err != nil {
-    log.Fatalf("Failed to update session inactivity setting: %v", err)
+log.Fatalf("Failed to update session inactivity setting: %v", err)
 }
 
 log.Printf("Updated session inactivity setting: %v", updatedSession.IncludeInactivity)
@@ -314,17 +314,17 @@ Update a session while ensuring version consistency at the session level.
 ```go
 session, err := sessionManager.GetSession(ctx, sessionID)
 if err != nil {
-    log.Fatalf("Failed to retrieve session: %v", err)
+log.Fatalf("Failed to retrieve session: %v", err)
 }
 
 err = session.UpdateAttribute("last_access", time.Now())
 if err != nil {
-    log.Fatalf("Failed to update session attribute: %v", err)
+log.Fatalf("Failed to update session attribute: %v", err)
 }
 
-updatedSession, err := sessionManager.UpdateSession(ctx, session, gopgsession.WithCheckVersion())
+updatedSession, err := sessionManager.UpdateSession(ctx, session, gopgsession.WithUpdateCheckVersion())
 if err != nil {
-    log.Fatalf("Failed to update session: %v", err)
+log.Fatalf("Failed to update session: %v", err)
 }
 ```
 
@@ -350,7 +350,7 @@ if err != nil {
     log.Fatalf("Failed to update session attribute: %v", err)
 }
 
-updatedSession, err := sessionManager.UpdateSession(ctx, session, gopgsession.WithCheckAttributeVersion())
+updatedSession, err := sessionManager.UpdateSession(ctx, session, gopgsession.WithUpdateCheckAttributeVersion())
 if err != nil {
     log.Fatalf("Failed to update session: %v", err)
 }
@@ -466,7 +466,7 @@ func addToCartHandler(sm *gopgsession.SessionManager) http.HandlerFunc {
             if attempt == 0 {
                 session, err = sm.GetSession(r.Context(), sessionID)
             } else {
-                session, err = sm.GetSession(r.Context(), sessionID, gopgsession.WithForceRefresh())
+                session, err = sm.GetSession(r.Context(), sessionID, gopgsession.WithGetForceRefresh())
             }
 
             if err != nil {
@@ -489,7 +489,7 @@ func addToCartHandler(sm *gopgsession.SessionManager) http.HandlerFunc {
                 return
             }
 
-            _, err = sm.UpdateSession(r.Context(), session, gopgsession.WithCheckAttributeVersion())
+            _, err = sm.UpdateSession(r.Context(), session, gopgsession.WithUpdateCheckAttributeVersion())
             if err != nil {
                 if err.Error() == "attribute cart version mismatch" {
                     continue // Retry
@@ -689,27 +689,27 @@ By using `DeleteAttributeFromAllUserSessions`, you can efficiently handle scenar
 
 The `go-pg-session` library offers two types of version checking for optimistic locking:
 
-1. **Session-Level Version Checking** (`WithCheckVersion()`):
+1. **Session-Level Version Checking** (`WithUpdateCheckVersion()`):
     - Checks the version of the entire session.
     - Useful when you want to ensure the entire session hasn't been modified since it was retrieved.
 
-2. **Attribute-Level Version Checking** (`WithCheckAttributeVersion()`):
+2. **Attribute-Level Version Checking** (`WithUpdateCheckAttributeVersion()`):
     - Checks the version of individual attributes being updated.
     - Provides finer-grained control over concurrent modifications.
     - Useful when different parts of your application may be updating different attributes concurrently.
 
 Choose the appropriate version checking method based on your specific use case:
 
-- Use `WithCheckVersion()` when:
+- Use `WithUpdateCheckVersion()` when:
     - You need to ensure the entire session state is as expected before making updates.
     - You want to detect any changes to the session, even to attributes you're not currently modifying.
 
-- Use `WithCheckAttributeVersion()` when:
+- Use `WithUpdateCheckAttributeVersion()` when:
     - You want to allow concurrent updates to different attributes of the same session.
     - You need more granular conflict detection and resolution.
     - You're updating a specific attribute and don't care about changes to other attributes.
 
-Remember, you should choose either `WithCheckVersion()` or `WithCheckAttributeVersion()`, not both, as `WithCheckVersion()` implicitly checks all attribute versions as well.
+Remember, you should choose either `WithUpdateCheckVersion()` or `WithUpdateCheckAttributeVersion()`, not both, as `WithUpdateCheckVersion()` implicitly checks all attribute versions as well.
 
 ## Distributed Locks
 
@@ -912,9 +912,9 @@ func (sm *SessionManager) UpdateSession(ctx context.Context, session *Session, o
 
 #### Update Session Options
 
-- `WithCheckVersion()`: Enables version checking for the entire session.
-- `WithCheckAttributeVersion()`: Enables version checking for individual attributes.
-- `WithDoNotNotify()`: Disables notifications for this update operation.
+- `WithUpdateCheckVersion()`: Enables version checking for the entire session.
+- `WithUpdateCheckAttributeVersion()`: Enables version checking for individual attributes.
+- `WithUpdateDoNotNotify()`: Disables notifications for this update operation.
 - `WithUpdateIncludeInactivity(bool)`: Updates whether the session should expire due to inactivity.
 - `WithUpdateExpiresAt(time.Time)`: Updates the expiration time of the session.
 
@@ -922,10 +922,10 @@ Usage examples:
 
 ```go
 // Session-level version checking
-updatedSession, err := sm.UpdateSession(ctx, session, gopgsession.WithCheckVersion())
+updatedSession, err := sm.UpdateSession(ctx, session, gopgsession.WithUpdateCheckVersion())
 
 // Attribute-level version checking
-updatedSession, err := sm.UpdateSession(ctx, session, gopgsession.WithCheckAttributeVersion())
+updatedSession, err := sm.UpdateSession(ctx, session, gopgsession.WithUpdateCheckAttributeVersion())
 
 // Update inactivity setting and expiration time
 updatedSession, err := sm.UpdateSession(ctx, session,
@@ -989,7 +989,7 @@ func (s *Session) UpdateAttribute(key string, value interface{}, options ...Upda
 
 #### Update Attribute Options
 
-- `WithExpiresAt(time.Time)`: Sets an expiration time for the attribute.
+- `WithUpdateAttExpiresAt(time.Time)`: Sets an expiration time for the attribute.
 
 Usage examples:
 
@@ -999,7 +999,7 @@ err := session.UpdateAttribute("theme", "dark")
 
 // Update an attribute with expiration
 expiresAt := time.Now().Add(24 * time.Hour)
-err := session.UpdateAttribute("temporary_flag", true, gopgsession.WithExpiresAt(expiresAt))
+err := session.UpdateAttribute("temporary_flag", true, gopgsession.WithUpdateAttExpiresAt(expiresAt))
 ```
 
 #### `DeleteAttribute`
@@ -1046,14 +1046,14 @@ Usage example:
 
 ```go
 var preferences struct {
-    Theme string `json:"theme"`
-    Language string `json:"language"`
+Theme string `json:"theme"`
+Language string `json:"language"`
 }
 
 attr, err := session.GetAttributeAndRetainUnmarshaled("preferences", &preferences)
 if err != nil {
-    log.Printf("Failed to get preferences: %v", err)
-    return
+log.Printf("Failed to get preferences: %v", err)
+return
 }
 
 log.Printf("User preferences: Theme=%s, Language=%s", preferences.Theme, preferences.Language)
