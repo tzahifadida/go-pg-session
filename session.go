@@ -102,6 +102,7 @@ type Session struct {
 	LastAccessed      time.Time  `db:"last_accessed"`
 	ExpiresAt         time.Time  `db:"expires_at"`
 	UpdatedAt         time.Time  `db:"updated_at"`
+	CreatedAt         time.Time  `db:"created_at"`
 	Version           int        `db:"version"`
 	IncludeInactivity bool       `db:"include_inactivity"`
 	attributes        map[string]SessionAttributeValue
@@ -317,6 +318,7 @@ func (sm *SessionManager) createSchemaAndTables() error {
                 "last_accessed" TIMESTAMP WITH TIME ZONE NOT NULL,
                 "expires_at" TIMESTAMP WITH TIME ZONE NOT NULL,
                 "updated_at" TIMESTAMP WITH TIME ZONE NOT NULL,
+                "created_at" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 "version" INTEGER NOT NULL DEFAULT 1,
                 "include_inactivity" BOOLEAN NOT NULL DEFAULT true
             );`, sm.getTableName("sessions")),
@@ -392,6 +394,7 @@ func (sm *SessionManager) CreateSession(ctx context.Context, userID uuid.UUID, a
 		LastAccessed:      now,
 		ExpiresAt:         expiresAt,
 		UpdatedAt:         now,
+		CreatedAt:         now,
 		Version:           1,
 		IncludeInactivity: true,
 		attributes:        attributes,
@@ -529,7 +532,7 @@ func (sm *SessionManager) GetSessionWithVersion(ctx context.Context, sessionID u
 	}
 
 	query := fmt.Sprintf(`
-        SELECT "id", "user_id", "group_id", "last_accessed", "expires_at", "updated_at", "version", "include_inactivity"
+        SELECT "id", "user_id", "group_id", "last_accessed", "expires_at", "updated_at", "created_at", "version", "include_inactivity"
             FROM %s
             WHERE "id" = $1
     `, sm.getTableName("sessions"))
@@ -1412,6 +1415,7 @@ func (s *Session) deepCopy() *Session {
 		LastAccessed:      s.LastAccessed,
 		ExpiresAt:         s.ExpiresAt,
 		UpdatedAt:         s.UpdatedAt,
+		CreatedAt:         s.CreatedAt,
 		Version:           s.Version,
 		IncludeInactivity: s.IncludeInactivity,
 		attributes:        copiedAttributes,
