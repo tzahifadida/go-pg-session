@@ -730,7 +730,7 @@ func (sm *SessionManager) UpdateSession(ctx context.Context, session *Session, o
         UPDATE %s
         SET "updated_at" = $1, "version" = "version" + 1, "group_id" = $3%s%s
         WHERE "id" = $2%s 
-        RETURNING "id", "user_id", "group_id", "last_accessed", "expires_at", "updated_at", "version", "include_inactivity"
+        RETURNING "id", "user_id", "group_id", "last_accessed", "expires_at", "created_at", "updated_at", "version", "include_inactivity"
     `
 
 	var queryParams []interface{}
@@ -769,6 +769,7 @@ func (sm *SessionManager) UpdateSession(ctx context.Context, session *Session, o
 		&updatedSession.GroupID,
 		&updatedSession.LastAccessed,
 		&updatedSession.ExpiresAt,
+		&updatedSession.CreatedAt,
 		&updatedSession.UpdatedAt,
 		&updatedSession.Version,
 		&updatedSession.IncludeInactivity,
