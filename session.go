@@ -1053,6 +1053,7 @@ func (sm *SessionManager) listAttributes(ctx context.Context, sessionID uuid.UUI
 	}
 	defer rows.Close()
 
+	now := sm.clock.Now()
 	attributes := make(map[string]SessionAttributeValue)
 	for rows.Next() {
 		var key, value string
@@ -1062,6 +1063,12 @@ func (sm *SessionManager) listAttributes(ctx context.Context, sessionID uuid.UUI
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan attribute row: %w", err)
 		}
+
+		// Skip expired attributes
+		if expiresAt != nil && expiresAt.Before(now) {
+			continue
+		}
+
 		attributes[key] = SessionAttributeValue{Value: value, ExpiresAt: expiresAt, Marshaled: true, Version: version}
 	}
 
@@ -1307,13 +1314,34 @@ func (s *Session) DeleteAttribute(key string) error {
 
 // GetAttributes returns all attributes of the session.
 func (s *Session) GetAttributes() map[string]SessionAttributeValue {
-	return s.attributes
+	now := s.sm.clock.Now()
+	result := make(map[string]SessionAttributeValue)
+
+	for key, attr := range s.attributes {
+		// Skip expired attributes
+		if attr.ExpiresAt != nil && attr.ExpiresAt.Before(now) {
+			continue
+		}
+		result[key] = attr
+	}
+
+	return result
 }
 
 // GetAttribute retrieves a specific attribute from the session.
 func (s *Session) GetAttribute(key string) (SessionAttributeValue, bool) {
 	attr, ok := s.attributes[key]
-	return attr, ok
+	if !ok {
+		return SessionAttributeValue{}, false
+	}
+
+	// Check if attribute is expired
+	now := s.sm.clock.Now()
+	if attr.ExpiresAt != nil && attr.ExpiresAt.Before(now) {
+		return SessionAttributeValue{}, false
+	}
+
+	return attr, true
 }
 
 var ErrAttributeNotFound = errors.New("attribute not found")
@@ -1323,6 +1351,12 @@ var ErrAttributeNotFound = errors.New("attribute not found")
 func (s *Session) GetAttributeAndRetainUnmarshaled(key string, v interface{}) (SessionAttributeValue, error) {
 	attr, ok := s.attributes[key]
 	if !ok {
+		return SessionAttributeValue{}, ErrAttributeNotFound
+	}
+
+	// Check if attribute is expired
+	now := s.sm.clock.Now()
+	if attr.ExpiresAt != nil && attr.ExpiresAt.Before(now) {
 		return SessionAttributeValue{}, ErrAttributeNotFound
 	}
 
@@ -1430,6 +1464,12 @@ func (s *Session) deepCopy() *Session {
 
 func (sm *SessionManager) cleanupWorker() {
 	defer sm.wg.Done()
+
+	// Run cleanup immediately on worker start
+	if err := sm.cleanupExpiredSessions(context.Background()); err != nil {
+		sm.Config.Logger.Error("Error in initial cleanup of expired sessions", "error", err)
+	}
+
 	ticker := sm.clock.NewTicker(sm.Config.CleanupInterval)
 	defer ticker.Stop()
 
