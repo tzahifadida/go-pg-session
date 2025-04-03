@@ -165,17 +165,16 @@ func (dl *DistributedLock) attemptLock(ctx context.Context, forceRefresh bool) e
 
 	var currentLockInfo LockInfo
 	_, err = session.GetAttributeAndRetainUnmarshaled(dl.lockAttributeKey(), &currentLockInfo)
+
 	if err == nil {
+		// Check if the lock is still valid
 		if now.Before(currentLockInfo.ExpiresAt) {
 			if now.Sub(currentLockInfo.LastHeartbeat) <= time.Duration(heartbeatMultiplier*float64(dl.config.LeaseTime)) {
 				return ErrLockAlreadyHeld
 			}
 		}
-	} else if !errors.Is(err, ErrAttributeNotFound) {
-		return fmt.Errorf("failed to get current lock info: %w", err)
 	}
-
-	err = session.UpdateAttribute(dl.lockAttributeKey(), lockInfo, WithUpdateAttExpiresAt(expiresAt))
+	err = session.UpdateAttribute(dl.lockAttributeKey(), lockInfo, WithUpdateAttExpiresAt(expiresAt.Add(1*time.Second)))
 	if err != nil {
 		return fmt.Errorf("failed to update lock attribute: %w", err)
 	}
@@ -185,7 +184,6 @@ func (dl *DistributedLock) attemptLock(ctx context.Context, forceRefresh bool) e
 		if errors.Is(err, ErrSessionVersionIsOutdated) {
 			return err // This will trigger a retry
 		}
-		return fmt.Errorf("failed to update session: %w", err)
 	}
 
 	return nil
@@ -217,12 +215,12 @@ func (dl *DistributedLock) startHeartbeat(ctx context.Context) {
 				err := dl.sendHeartbeat(dl.heartbeatCtx)
 				dl.mutex.Unlock()
 				if err != nil {
-					fmt.Printf("Failed to send heartbeat: %v\n", err)
+					dl.sm.Config.Logger.Error("failed to send heartbeat", "error", err)
 					return
 				}
 			case <-dl.expirationTimer.C:
 				dl.mutex.Lock()
-				fmt.Println("Lock lease expired, stopping heartbeat")
+				dl.sm.Config.Logger.Error("lock expired, stopping heartbeat")
 				dl.heartbeatStopped = true
 				dl.mutex.Unlock()
 				return
@@ -255,7 +253,9 @@ func (dl *DistributedLock) Unlock(ctx context.Context) error {
 	_, err = session.GetAttributeAndRetainUnmarshaled(dl.lockAttributeKey(), &currentLockInfo)
 	if err != nil {
 		if errors.Is(err, ErrAttributeNotFound) {
-			return ErrLockNotHeld
+			// If the attribute doesn't exist anymore (possibly expired),
+			// we'll consider it already unlocked
+			return nil
 		}
 		return fmt.Errorf("failed to get current lock info: %w", err)
 	}
@@ -298,7 +298,9 @@ func (dl *DistributedLock) ExtendLease(ctx context.Context, extension time.Durat
 	_, err = session.GetAttributeAndRetainUnmarshaled(dl.lockAttributeKey(), &currentLockInfo)
 	if err != nil {
 		if errors.Is(err, ErrAttributeNotFound) {
-			return ErrLockNotHeld
+			// If the attribute doesn't exist anymore (possibly expired),
+			// we can't extend it
+			return ErrLockExpired
 		}
 		return fmt.Errorf("failed to get current lock info: %w", err)
 	}
@@ -352,7 +354,8 @@ func (dl *DistributedLock) sendHeartbeat(ctx context.Context) error {
 	_, err = session.GetAttributeAndRetainUnmarshaled(dl.lockAttributeKey(), &currentLockInfo)
 	if err != nil {
 		if errors.Is(err, ErrAttributeNotFound) {
-			return ErrLockNotHeld
+			// If the attribute has expired, we can't send heartbeats anymore
+			return ErrLockExpired
 		}
 		return fmt.Errorf("failed to get current lock info: %w", err)
 	}

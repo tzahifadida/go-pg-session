@@ -37,7 +37,8 @@ func TestDistributedLockConcurrent(t *testing.T) {
 
 		var wg sync.WaitGroup
 		successCount := 0
-		var successMutex sync.Mutex
+		failureCount := 0
+		var counterMutex sync.Mutex
 
 		for i := 0; i < numWorkers; i++ {
 			wg.Add(1)
@@ -46,12 +47,16 @@ func TestDistributedLockConcurrent(t *testing.T) {
 				lock := sm.NewDistributedLock(session.ID, resource, nil)
 				err := lock.Lock(ctx)
 				if err == nil {
-					successMutex.Lock()
+					counterMutex.Lock()
 					successCount++
-					successMutex.Unlock()
-					time.Sleep(2 * time.Second) // Hold the lock for a bit
+					counterMutex.Unlock()
+					time.Sleep(time.Second * 10)
 					err = lock.Unlock(ctx)
 					assert.NoError(t, err)
+				} else {
+					counterMutex.Lock()
+					failureCount++
+					counterMutex.Unlock()
 				}
 			}()
 		}

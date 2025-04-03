@@ -657,11 +657,13 @@ func (sm *SessionManager) UpdateSession(ctx context.Context, session *Session, o
 			if opts.CheckAttributeVersion {
 				if attr.Version < 0 {
 					// Insert new attribute
+					// It is possible that because of memory expiration we still have the row in the database. we have to upsert here instead...
 					query = fmt.Sprintf(`
-                        INSERT INTO %s ("session_id", "key", "value", "expires_at", "version")
-                        VALUES ($1, $2, $3, $4, 1)
-                        RETURNING "version"
-                    `, sm.getTableName("session_attributes"))
+						INSERT INTO %s ("session_id", "key", "value", "expires_at", "version")
+						VALUES ($1, $2, $3, $4, 1)
+						ON CONFLICT ("session_id", "key") DO NOTHING
+						RETURNING "version"
+					`, sm.getTableName("session_attributes"))
 					args = []interface{}{session.ID, key, marshaledValue, attr.ExpiresAt}
 				} else {
 					// Update existing attribute
@@ -674,7 +676,6 @@ func (sm *SessionManager) UpdateSession(ctx context.Context, session *Session, o
 					args = []interface{}{marshaledValue, attr.ExpiresAt, session.ID, key, attr.Version}
 				}
 			} else {
-				// Original upsert logic
 				query = fmt.Sprintf(`
                     INSERT INTO %s ("session_id", "key", "value", "expires_at", "version")
                     VALUES ($1, $2, $3, $4, 1)
@@ -691,8 +692,8 @@ func (sm *SessionManager) UpdateSession(ctx context.Context, session *Session, o
 			err = tx.QueryRowContext(ctx, query, args...).Scan(&newVersion)
 
 			if err != nil {
-				if err == sql.ErrNoRows && opts.CheckAttributeVersion {
-					return nil, fmt.Errorf("attribute %s version mismatch or not found", key)
+				if errors.Is(err, sql.ErrNoRows) && opts.CheckAttributeVersion {
+					return nil, fmt.Errorf("attribute %s version mismatch or not found: %w", key, ErrSessionVersionIsOutdated)
 				}
 				return nil, fmt.Errorf("failed to update session attribute: %w", err)
 			}
@@ -1053,7 +1054,6 @@ func (sm *SessionManager) listAttributes(ctx context.Context, sessionID uuid.UUI
 	}
 	defer rows.Close()
 
-	now := sm.clock.Now()
 	attributes := make(map[string]SessionAttributeValue)
 	for rows.Next() {
 		var key, value string
@@ -1062,11 +1062,6 @@ func (sm *SessionManager) listAttributes(ctx context.Context, sessionID uuid.UUI
 		err := rows.Scan(&key, &value, &expiresAt, &version)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan attribute row: %w", err)
-		}
-
-		// Skip expired attributes
-		if expiresAt != nil && expiresAt.Before(now) {
-			continue
 		}
 
 		attributes[key] = SessionAttributeValue{Value: value, ExpiresAt: expiresAt, Marshaled: true, Version: version}
